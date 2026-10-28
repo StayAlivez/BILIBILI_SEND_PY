@@ -25,7 +25,7 @@ Spring Web / WebFlux、MyBatis-Plus、Druid、MySQL 驱动，还要在 IDEA 里�
 
 | | Java 版 | Python 版 |
 | --- | --- | --- |
-| 启动方式 | IDEA 里跑测试类 | 双击 `run.bat`，或 `python main.py`，点「开始发送」 |
+| 启动方式 | IDEA 里跑测试类 | 双击 `run.bat`（免安装版内置运行时），或 `python main.py` |
 | 依赖 | Spring Boot 3.1、WebFlux、MyBatis-Plus、Druid、MySQL、fastjson | 仅标准库（`tkinter` + `urllib`），**无需 pip install** |
 | 配置 | `application.yml`（含 MySQL 连接） | `config.json`，界面里直接改，关闭时自动保存 |
 | 数据库 | 需要本地 `bigjava` 库，否则启动报错 | 不需要 |
@@ -39,10 +39,22 @@ Spring Web / WebFlux、MyBatis-Plus、Druid、MySQL 驱动，还要在 IDEA 里�
 - Python 3.9+（已在 3.11 与 3.14 上实测；建议 [python.org](https://www.python.org/downloads/) 安装包，自带 tkinter）
 - 不需要数据库、不需要 Maven / JDK
 
-## 快速开始
+## 下载免安装版（推荐）
 
-0. 克隆或下载本仓库：`git clone https://github.com/StayAlivez/BILIBILI_SEND_PY.git`
-1. 双击 `run.bat`（或在项目目录执行 `python main.py`）打开界面。
+不想装 Python 的话，直接下载 Releases 里的压缩包：
+
+**https://github.com/StayAlivez/BILIBILI_SEND_PY/releases**
+
+- 包名：`BILIBILI_SEND_PY_v1.0.0_portable_win64.zip`
+- 内置 Python 3.11.9 运行时（含 tkinter），解压后双击 `run.bat` 即可，**无需安装 Python**
+- 仅支持 Windows 10 / 11 64 位
+- 如果双击没反应，改双击 `debug.bat`，控制台里会显示具体报错
+
+## 从源码运行
+
+需要本机装有 Python 3.9+（python.org 版，自带 tkinter）：
+
+1. 双击 `run.bat`（或执行 `python main.py`）打开界面。
 2. 「直播间」填房间号（短号也行），点「检测直播间」确认房间号、标题、开播状态。
 3. 粘贴 Cookie（必须包含 `SESSDATA` 与 `bili_jct`），下方会显示「✔ Cookie 可用（UID …）」。
 4. 确认消息文件、发送间隔、颜色/位置，点 **▶ 开始发送**。
@@ -100,7 +112,8 @@ Cookie 会明文保存在 `config.json` 里，仅本机使用；失效后重新�
 ```
 BILIBILI_SEND_PY/
 ├── main.py                 # 入口：默认 GUI，--cli 走命令行
-├── run.bat                 # Windows 双击启动
+├── run.bat                 # Windows 双击启动（免安装版自动用内置 runtime）
+├── debug.bat               # 同上，但保留控制台，便于看报错
 ├── config.json             # 配置（首次运行/关闭界面时自动生成，含 Cookie，不提交）
 ├── config.example.json     # 配置样例（无 Cookie）
 ├── messages/               # 弹幕消息列表
@@ -113,6 +126,8 @@ BILIBILI_SEND_PY/
 │   ├── runner.py           # 后台发送线程（可随时停止）
 │   ├── gui.py              # Tkinter 界面
 │   └── logbus.py           # 日志汇入界面
+├── tools/
+│   └── build_portable.py   # 构建内置 Python 的免安装包
 ├── tests/test_core.py      # 单元测试（不联网）
 └── logs/bili_send.log      # 运行日志（自动生成）
 ```
@@ -135,6 +150,17 @@ py -3 -m unittest discover -s tests -v
 
 覆盖消息文件解析、JSON 容错、权重抽取、Cookie 解析、发送表单编码、接口错误码、
 配置读写与发送线程启停，全部使用假网络，不会真的发弹幕。
+
+## 打包免安装版
+
+需要本机有一份**带 tkinter 的 Python 3.11 完整安装**（版本与 embeddable 包一致）：
+
+```bat
+py -3 tools/build_portable.py --python-home "C:\...\pythoncore-3.11-64" --proxy http://127.0.0.1:7897
+```
+
+脚本会下载官方 embeddable 包（缓存到 `.cache/`）、补入 tkinter / Tcl / Tk，
+自检通过后输出 `dist/BILIBILI_SEND_PY_v1.0.0_portable_win64.zip`。
 
 ## 注意事项
 

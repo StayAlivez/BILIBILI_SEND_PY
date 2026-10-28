@@ -10,6 +10,8 @@ __pycache__/
 logs/
 config.json.tmp
 config.json.bad
+dist/
+.cache/
 
 # 测试临时目录
 tests/.tmp/
