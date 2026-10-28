@@ -12,10 +12,6 @@
     "weight": 1
   },
   {
-    "msg": "可爱",
-    "weight": 1
-  },
-  {
     "msg": "MUAMUAMUA",
     "weight": 1
   },
@@ -29,6 +25,14 @@
   },
   {
     "msg": "好听",
+    "weight": 1
+  },
+  {
+    "msg": "太好听了叭,简直就是天籁",
+    "weight": 1
+  },
+  {
+    "msg": "可爱",
     "weight": 1
   }
 ]
