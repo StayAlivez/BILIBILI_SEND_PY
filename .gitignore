@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# IDE（PyCharm / VS Code 本地配置）
+.idea/
+.vscode/
+
+# 运行产物
+logs/
+config.json.tmp
+config.json.bad
+
+# 测试临时目录
+tests/.tmp/
+
+# 本机配置（含 Cookie，不要提交）
+config.json
+
+# 本机推送辅助脚本（只在这台机器上用）
+push-to-github.bat

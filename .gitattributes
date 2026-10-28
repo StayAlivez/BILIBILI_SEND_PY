@@ -1,0 +1,9 @@
+# 统一换行，避免 Windows 上 checkout 出 LF 的 .bat
+* text=auto
+
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.bat  text eol=crlf
+
+*.png  binary

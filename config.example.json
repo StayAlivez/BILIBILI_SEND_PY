@@ -1,0 +1,14 @@
+{
+  "cookie": "",
+  "room_id": 22676119,
+  "interval_seconds": 30,
+  "mode": "weighted",
+  "messages_file": "messages/weighted.json",
+  "avoid_repeat": true,
+  "color": 5566168,
+  "fontsize": 25,
+  "danmaku_mode": 1,
+  "timeout_seconds": 5,
+  "room_title": "",
+  "anchor_name": ""
+}
