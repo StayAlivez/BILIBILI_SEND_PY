@@ -88,7 +88,7 @@ class DanmakuRunner:
             if status.known and not status.logged_in:
                 error = f"Cookie 已失效，B 站未登录：{status.message}。请重新复制 Cookie 后再发送。"
             elif status.known:
-                log.info("登录账号：%s", status.display)
+                log.info("登录账号：%s", status.uname or "已登录")
             else:
                 log.warning("无法确认登录状态（%s），直接尝试发送。", status.message)
 

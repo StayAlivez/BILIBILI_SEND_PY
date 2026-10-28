@@ -1048,7 +1048,7 @@ class BiliSendApp(tk.Tk):
                 client = BilibiliClient(cookie, timeout=8.0)
                 status = client.check_login()
                 if status.known and status.logged_in:
-                    log.info("当前登录账号：%s", status.display)
+                    log.info("当前登录账号：%s", status.uname or "已登录")
                 elif status.known:
                     log.warning("当前 Cookie 未登录：%s", status.message)
                 room = client.resolve_room(room_id)
