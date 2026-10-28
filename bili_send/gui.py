@@ -89,6 +89,7 @@ class BiliSendApp(tk.Tk):
         self._running = False
         self._cookie_hidden = True
         self._cookie_value = ""
+        self._pump_id: str | None = None
         self.report_callback_exception = self._on_callback_error  # type: ignore[assignment]
 
         self._setup_window()
@@ -98,7 +99,8 @@ class BiliSendApp(tk.Tk):
         self._refresh_cookie_status()
         self._refresh_message_tree()
         self._refresh_stats()
-        self.after(POLL_MS, self._pump)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._pump_id = self.after(POLL_MS, self._pump)
         log.info("界面已就绪，配置目录：%s", APP_DIR)
 
     # ---------------------------------------------------------------- 窗口与样式
@@ -207,7 +209,8 @@ class BiliSendApp(tk.Tk):
         self.cookie_entry = ttk.Entry(text_frame, show="•", font=("Consolas", 10))
         self.cookie_entry.grid(row=0, column=0, sticky="ew")
         self.cookie_entry.bind("<KeyRelease>", lambda _event: self._refresh_cookie_status())
-        self.cookie_entry.bind("<<Paste>>", lambda _event: self.after_idle(self._refresh_cookie_status))
+        self.cookie_entry.bind("<FocusOut>", lambda _event: self._on_cookie_focus_out())
+        self.cookie_entry.bind("<<Paste>>", lambda _event: self.after_idle(self._on_cookie_pasted))
 
         # 显示状态切成多行文本，方便查看/编辑很长的 Cookie
         self.cookie_text = tk.Text(
@@ -227,8 +230,8 @@ class BiliSendApp(tk.Tk):
         self.cookie_text.grid_remove()
         self.cookie_scroll.grid_remove()
         self.cookie_text.bind("<KeyRelease>", lambda _event: self._refresh_cookie_status())
-        self.cookie_text.bind("<FocusOut>", lambda _event: self._refresh_cookie_status())
-        self.cookie_text.bind("<<Paste>>", lambda _event: self.after_idle(self._refresh_cookie_status))
+        self.cookie_text.bind("<FocusOut>", lambda _event: self._on_cookie_focus_out())
+        self.cookie_text.bind("<<Paste>>", lambda _event: self.after_idle(self._on_cookie_pasted))
 
         cookie_options = ttk.Frame(cookie_box)
         cookie_options.grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -693,6 +696,25 @@ class BiliSendApp(tk.Tk):
     def _sync_cookie_value(self) -> None:
         self._cookie_value = self._cookie_text_now()
 
+    def _on_cookie_focus_out(self) -> None:
+        self._refresh_cookie_status()
+        self._autosave_cookie()
+
+    def _on_cookie_pasted(self) -> None:
+        self._refresh_cookie_status()
+        self._autosave_cookie()
+
+    def _autosave_cookie(self) -> None:
+        """勾选保存时，粘贴或输入框失焦就把当前设置（含 Cookie）写盘。"""
+        if not self.save_cookie_var.get():
+            return
+        if not self._collect_config(silent=True):
+            return
+        try:
+            save_config(self.cfg.storage_copy())
+        except OSError as exc:
+            log.warning("自动保存 Cookie 失败：%s", exc)
+
     def _on_toggle_show_cookie(self) -> None:
         if self._running:
             return
@@ -707,12 +729,15 @@ class BiliSendApp(tk.Tk):
             self.cookie_text.focus_set()
 
     def _on_toggle_save_cookie(self) -> None:
-        self.cfg.save_cookie = bool(self.save_cookie_var.get())
-        if self.save_cookie_var.get():
-            log.info("已开启 Cookie 保存，下次启动会自动填入")
+        enabled = bool(self.save_cookie_var.get())
+        self.cfg.save_cookie = enabled
+        if enabled:
+            self._autosave_cookie()
+            log.info("已开启 Cookie 保存，粘贴 / 失焦 / 关闭窗口时会自动写入")
         else:
             self._scrub_saved_cookie()
             log.info("已关闭 Cookie 保存，并清除 config.json 中的 Cookie")
+        self._refresh_cookie_status()
 
     def _scrub_saved_cookie(self) -> None:
         cfg = self.cfg.copy()
@@ -731,7 +756,10 @@ class BiliSendApp(tk.Tk):
             return
         self._set_cookie_value(text, hide=self._cookie_hidden)
         self._refresh_cookie_status()
+        self._autosave_cookie()
         log.info("已从剪贴板粘贴 Cookie（%d 个键）", len(parse_cookie(text)))
+        if not self.save_cookie_var.get():
+            log.info("「保存 Cookie」未勾选，关闭程序后不会记住这次粘贴")
 
     def _clear_cookie(self) -> None:
         self._set_cookie_value("", hide=self._cookie_hidden)
@@ -749,7 +777,8 @@ class BiliSendApp(tk.Tk):
             self.cookie_status_label.configure(style="Bad.TLabel")
             return
         if self._cookie_hidden:
-            self.cookie_status_var.set("✔ Cookie 可用（已打码）")
+            saved = "已保存" if self.save_cookie_var.get() else "未保存"
+            self.cookie_status_var.set(f"✔ Cookie 可用（已打码 · {saved}）")
         else:
             uid = parse_cookie(raw).get("DedeUserID", "")
             self.cookie_status_var.set(f"✔ Cookie 可用（UID {uid}）" if uid else "✔ Cookie 可用")
@@ -1105,7 +1134,7 @@ class BiliSendApp(tk.Tk):
             pass
 
         self._tick_countdown()
-        self.after(POLL_MS, self._pump)
+        self._pump_id = self.after(POLL_MS, self._pump)
 
     def _handle_event(self, event: dict[str, Any]) -> None:
         kind = event.get("kind")
@@ -1269,11 +1298,24 @@ class BiliSendApp(tk.Tk):
                 return
             self.runner.stop()
             self.runner.join(3.0)
-        self._collect_config(silent=True)
+
+        if self._collect_config(silent=True):
+            cfg = self.cfg
+        else:
+            # 其它字段不合法时也照样按开关把 Cookie 写回
+            cfg = self.cfg.copy()
+            cfg.cookie = self._cookie_text_now()
+            cfg.save_cookie = bool(self.save_cookie_var.get())
         try:
-            save_config(self.cfg.storage_copy())
+            save_config(cfg.storage_copy())
         except OSError as exc:
             log.warning("保存配置失败：%s", exc)
+        if self._pump_id is not None:
+            try:
+                self.after_cancel(self._pump_id)
+            except tk.TclError:
+                pass
+            self._pump_id = None
         self.destroy()
 
 
