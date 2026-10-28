@@ -168,6 +168,25 @@ def cookie_warnings(raw: str) -> list[str]:
     return warnings
 
 
+MASK = "••••••••"
+
+
+def mask_cookie(raw: str) -> str:
+    """把 Cookie 值替换成圆点，只保留常用键名，便于界面默认打码显示。"""
+    parsed = parse_cookie(raw)
+    if not parsed:
+        return ""
+    important = [name for name in ("SESSDATA", "bili_jct", "DedeUserID") if name in parsed]
+    parts = [f"{name}={MASK}" for name in important]
+    rest = len(parsed) - len(important)
+    if parts:
+        text = "   ".join(parts)
+        if rest:
+            text += f"   （另有 {rest} 项已隐藏）"
+        return text
+    return f"（{len(parsed)} 项 Cookie 已隐藏）"
+
+
 class BilibiliClient:
     """封装弹幕发送所需的 HTTP 细节。"""
 

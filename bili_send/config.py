@@ -44,6 +44,7 @@ class AppConfig:
     """界面与发送线程共享的全部配置。"""
 
     cookie: str = ""
+    save_cookie: bool = True
     room_id: int = 22676119
     interval_seconds: float = 30.0
     mode: str = MODE_WEIGHTED
@@ -64,6 +65,13 @@ class AppConfig:
     def copy(self) -> "AppConfig":
         """返回一份独立副本，避免发送线程读到界面后续修改的值。"""
         return AppConfig.from_dict(asdict(self))
+
+    def storage_copy(self) -> "AppConfig":
+        """写盘用的副本：关闭「保存 Cookie」时不把 Cookie 落盘。"""
+        cfg = self.copy()
+        if not cfg.save_cookie:
+            cfg.cookie = ""
+        return cfg
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -101,7 +109,7 @@ class AppConfig:
 
 _INT_FIELDS = {"room_id", "color", "fontsize", "danmaku_mode"}
 _FLOAT_FIELDS = {"interval_seconds", "timeout_seconds"}
-_BOOL_FIELDS = {"avoid_repeat"}
+_BOOL_FIELDS = {"avoid_repeat", "save_cookie"}
 _STR_FIELDS = {"cookie", "mode", "messages_file", "room_title", "anchor_name"}
 
 

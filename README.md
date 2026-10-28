@@ -1,43 +1,7 @@
-# BILIBILI_SEND · 直播弹幕助手（Python 版）
+# BILIBILI_SEND · 直播弹幕助手
 
-原 `BILIBILI_SEND` 是一个 Spring Boot 工程：为了定时给 B 站直播间发几条随机弹幕，引入了
-Spring Web / WebFlux、MyBatis-Plus、Druid、MySQL 驱动，还要在 IDEA 里跑 `@SpringBootTest`
-再 `Thread.sleep(100000000)` 等着。这里把它重写成 **纯 Python + Tkinter**：双击打开一个窗口，
-填好 Cookie 点「开始发送」即可，没有任何第三方依赖，也不碰数据库。
-
-> 原 Java 版是另一个 Spring Boot 工程，仍保留在本地工作区，方便对照；本仓库只包含 Python 版。
-
-## 界面预览
-
-发送页：填房间号、Cookie、间隔，点「开始发送」即可（`docs/send.png`）。
-
-![发送页](docs/send.png)
-
-消息库：直接在表格里增删改，权重 0 表示暂不参与（`docs/messages.png`）。
-
-![消息库](docs/messages.png)
-
-运行日志：成功/警告/错误分色显示，同时写入 `logs/bili_send.log`（`docs/log.png`）。
-
-![运行日志](docs/log.png)
-
-## 对比
-
-| | Java 版 | Python 版 |
-| --- | --- | --- |
-| 启动方式 | IDEA 里跑测试类 | 双击 `run.bat`（免安装版内置运行时），或 `python main.py` |
-| 依赖 | Spring Boot 3.1、WebFlux、MyBatis-Plus、Druid、MySQL、fastjson | 仅标准库（`tkinter` + `urllib`），**无需 pip install** |
-| 配置 | `application.yml`（含 MySQL 连接） | `config.json`，界面里直接改，关闭时自动保存 |
-| 数据库 | 需要本地 `bigjava` 库，否则启动报错 | 不需要 |
-| 消息列表 | 手改 JSON 文件 | 「消息库」页签增删改，也能导入/导出 JSON |
-| 日志 | IDEA 控制台 | 「运行日志」页签 + `logs/bili_send.log` |
-| 停止 | 只能杀掉测试进程 | 点「停止」，当前请求结束后立即退出 |
-
-## 运行要求
-
-- Windows 10 / 11
-- Python 3.9+（已在 3.11 与 3.14 上实测；建议 [python.org](https://www.python.org/downloads/) 安装包，自带 tkinter）
-- 不需要数据库、不需要 Maven / JDK
+一个用 **Python + Tkinter** 写的 B 站直播弹幕助手：打开窗口，填好房间号和 Cookie，点「开始发送」即可。
+不需要数据库、不需要构建工具，也没有任何第三方 Python 依赖。
 
 ## 下载免安装版（推荐）
 
@@ -45,24 +9,52 @@ Spring Web / WebFlux、MyBatis-Plus、Druid、MySQL 驱动，还要在 IDEA 里�
 
 **https://github.com/StayAlivez/BILIBILI_SEND_PY/releases**
 
-- 包名：`BILIBILI_SEND_PY_v1.0.0_portable_win64.zip`
+- 包名：`BILIBILI_SEND_PY_v1.1.0_portable_win64.zip`
 - 内置 Python 3.11.9 运行时（含 tkinter），解压后双击 `run.bat` 即可，**无需安装 Python**
 - 仅支持 Windows 10 / 11 64 位
 - 如果双击没反应，改双击 `debug.bat`，控制台里会显示具体报错
 
+## 界面预览
+
+发送页（Cookie 默认打码）：
+
+![发送页](docs/send.png)
+
+消息库：
+
+![消息库](docs/messages.png)
+
+运行日志：
+
+![运行日志](docs/log.png)
+
+## 功能
+
+- 图形界面一键启停，发送间隔与倒计时实时显示
+- 按权重随机 / 完全随机抽取弹幕，可避免连续两条重复
+- 自动解析直播间短号，显示标题、主播、分区与开播状态
+- **Cookie 默认打码**，需要时勾选「显示 Cookie」查看或编辑
+- 可选择是否把 Cookie 保存到 `config.json`；取消保存会立即清除已写入的 Cookie
+- 发送前用 `nav` 接口预检登录态，CSRF（`bili_jct`）自动提取
+- 消息库可视化增删改，支持导入 / 导出 JSON
+- 运行日志分色显示，同时写入 `logs/bili_send.log`
+- 错误码中文化：`-101` / `-111` / `10031` / `-509` / `-400` 等会给出具体原因
+- 支持命令行模式，方便挂后台
+
+## 运行要求
+
+- Windows 10 / 11
+- Python 3.9+（已在 3.11 与 3.14 上实测；建议 [python.org](https://www.python.org/downloads/) 安装包，自带 tkinter）
+- 不需要数据库、不需要额外依赖
+
 ## 从源码运行
 
-需要本机装有 Python 3.9+（python.org 版，自带 tkinter）：
-
-1. 双击 `run.bat`（或执行 `python main.py`）打开界面。
-2. 「直播间」填房间号（短号也行），点「检测直播间」确认房间号、标题、开播状态。
-3. 粘贴 Cookie（必须包含 `SESSDATA` 与 `bili_jct`），下方会显示「✔ Cookie 可用（UID …）」。
-4. 确认消息文件、发送间隔、颜色/位置，点 **▶ 开始发送**。
-5. 想停就点 **■ 停止**；状态栏会实时显示已发送 / 成功 / 失败与倒计时。
-
-发送时会自动把短号解析成真实房间号，并按设置随机（或按权重）抽取弹幕。
-每次点「开始发送」前，程序还会调用一次 B 站 `nav` 接口确认 Cookie 仍处于登录状态；
-如果 Cookie 已过期，会直接提示而不是空发一堆失败请求。
+1. 克隆或下载本仓库。
+2. 双击 `run.bat`（或执行 `python main.py`）。
+3. 填房间号，点「检测直播间」确认房间号、标题与开播状态。
+4. 粘贴 Cookie（必须包含 `SESSDATA` 与 `bili_jct`）。
+5. 确认消息文件、发送间隔、颜色 / 位置，点 **▶ 开始发送**。
+6. 想停就点 **■ 停止**；状态栏会实时显示已发送 / 成功 / 失败与倒计时。
 
 ### Cookie 怎么拿
 
@@ -71,7 +63,14 @@ Spring Web / WebFlux、MyBatis-Plus、Druid、MySQL 驱动，还要在 IDEA 里�
 3. 随便点一个请求，在「请求头 / Request Headers」里找到 `Cookie:`，把整串值复制出来。
 4. 回到程序点「粘贴剪贴板」。
 
-Cookie 会明文保存在 `config.json` 里，仅本机使用；失效后重新复制即可（B 站 Cookie 通常几个月有效）。
+### 录屏 / 演示时的隐私
+
+- Cookie 框默认只显示 `SESSDATA=••••••••` 这样的打码文本，**不会把值显示在屏幕上**。
+- 只有勾选「显示 Cookie」才会明文显示；录完记得再取消勾选。
+- 「保存 Cookie 到 config.json」默认开启。录屏前建议取消勾选：程序会立即清除配置文件里已保存的 Cookie，之后启动也不会自动填入。
+- 打码状态下，状态栏只显示「Cookie 可用（已打码）」，不显示 UID。
+- 运行日志只会记录「已粘贴 N 个键」，不会写入 Cookie 内容。
+- 免安装包里不包含 `config.json`，解压后是干净的初始状态。
 
 ## 消息文件格式
 
@@ -89,23 +88,9 @@ Cookie 会明文保存在 `config.json` 里，仅本机使用；失效后重新�
 ```
 
 - `weight` 越大越容易被抽到；`weight` 为 0 表示暂不参与。
-- 也接受单个对象 `{"msg": "...", "weight": 1}`（原项目里的 `3.json` 就是这种）。
-- 权重是 1:50（1:3）时用「按权重随机」；想完全等概率就选「完全随机」。
+- 也接受单个对象 `{"msg": "...", "weight": 1}`。
+- 想完全等概率就选「完全随机」。
 - 弹幕内容里的换行会被压成空格；超过 20 字会在日志里提醒（B 站普通用户上限）。
-
-## 与 Java 版配置项的对应关系
-
-| 原 `application.yml` | 现 `config.json` |
-| --- | --- |
-| `BiLiBiLi.cookie` | `cookie` |
-| `BiLiBiLi.live.send.msg.roomid` | `room_id` |
-| `BiLiBiLi.live.send.intervalSeconds` | `interval_seconds` |
-| `BiLiBiLi.live.send.msgJsonPath` | `messages_file` |
-| `BiLiBiLi.live.send.msg.color` | `color` |
-| `BiLiBiLi.live.send.msg.fontsize` | `fontsize` |
-| `BiLiBiLi.live.send.msg.mode` | `danmaku_mode`（1 滚动 / 5 顶部 / 4 底部） |
-| `Demo2.run(1)` / `run(2)` | 抽取方式：完全随机 / 按权重随机 |
-| `BiLiBiLi.live.send.msg.csrf` | 自动从 Cookie 的 `bili_jct` 读取 |
 
 ## 目录结构
 
@@ -127,7 +112,8 @@ BILIBILI_SEND_PY/
 │   ├── gui.py              # Tkinter 界面
 │   └── logbus.py           # 日志汇入界面
 ├── tools/
-│   └── build_portable.py   # 构建内置 Python 的免安装包
+│   ├── build_portable.py   # 构建内置 Python 的免安装包
+│   └── publish_release.py  # 创建 Release 并上传压缩包
 ├── tests/test_core.py      # 单元测试（不联网）
 └── logs/bili_send.log      # 运行日志（自动生成）
 ```
@@ -140,7 +126,7 @@ BILIBILI_SEND_PY/
 python main.py --cli
 ```
 
-它读取同一个 `config.json`，按 Ctrl+C 停止；适合配合任务计划或开机自启。
+它读取同一份 `config.json`，按 Ctrl+C 停止；适合配合任务计划或开机自启。
 
 ## 测试
 
@@ -148,7 +134,7 @@ python main.py --cli
 py -3 -m unittest discover -s tests -v
 ```
 
-覆盖消息文件解析、JSON 容错、权重抽取、Cookie 解析、发送表单编码、接口错误码、
+覆盖消息文件解析、JSON 容错、权重抽取、Cookie 解析与打码、发送表单编码、接口错误码、
 配置读写与发送线程启停，全部使用假网络，不会真的发弹幕。
 
 ## 打包免安装版
@@ -160,7 +146,7 @@ py -3 tools/build_portable.py --python-home "C:\...\pythoncore-3.11-64" --proxy 
 ```
 
 脚本会下载官方 embeddable 包（缓存到 `.cache/`）、补入 tkinter / Tcl / Tk，
-自检通过后输出 `dist/BILIBILI_SEND_PY_v1.0.0_portable_win64.zip`。
+自检通过后输出 `dist/BILIBILI_SEND_PY_v1.1.0_portable_win64.zip`。
 
 ## 注意事项
 
@@ -177,7 +163,7 @@ py -3 tools/build_portable.py --python-home "C:\...\pythoncore-3.11-64" --proxy 
 | 发送失败 `code=-111` | Cookie 里缺少 `bili_jct`，或该值与登录态不匹配 |
 | 发送失败 `code=-400` | B 站对未登录请求会返回「请求错误」；检查 Cookie 是否已失效 |
 | 启动时提示「Cookie 已失效」 | `nav` 接口判定未登录，重新复制 Cookie（整串） |
-| 提示 Cookie 不完整 | 勾选「网络」里 `Cookie` 整串，不要只复制 `SESSDATA` |
-| 双击 `run.bat` 闪退 | 命令行运行 `python main.py` 看报错；重装 python.org 版并勾选 Add to PATH |
+| 提示 Cookie 不完整 | 复制「网络」里 `Cookie` 整串，不要只复制 `SESSDATA` |
+| 双击 `run.bat` 闪退 | 改双击 `debug.bat` 看报错；或重装 python.org 版并勾选 Add to PATH |
 | 界面中文乱码 | 用 `run.bat` 启动（内部已 `chcp 65001`） |
 | 想改默认房间/间隔 | 直接在界面改，关闭时自动写入 `config.json` |

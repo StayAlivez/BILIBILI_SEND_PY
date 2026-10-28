@@ -1,5 +1,6 @@
 {
   "cookie": "",
+  "save_cookie": true,
   "room_id": 22676119,
   "interval_seconds": 30,
   "mode": "weighted",

@@ -20,7 +20,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Any
 
-from .client import BilibiliClient, BilibiliError, RoomInfo, cookie_warnings, parse_cookie
+from .client import BilibiliClient, BilibiliError, RoomInfo, cookie_warnings, mask_cookie, parse_cookie
 from .config import (
     APP_DIR,
     DEFAULT_MESSAGES_FILE,
@@ -87,6 +87,8 @@ class BiliSendApp(tk.Tk):
         self._stats = {"total": 0, "ok": 0, "failed": 0}
         self._lockable: list[tk.Widget] = []
         self._running = False
+        self._cookie_hidden = True
+        self._cookie_value = ""
         self.report_callback_exception = self._on_callback_error  # type: ignore[assignment]
 
         self._setup_window()
@@ -102,7 +104,7 @@ class BiliSendApp(tk.Tk):
     # ---------------------------------------------------------------- 窗口与样式
     def _setup_window(self) -> None:
         self.title("BILIBILI_SEND · 直播弹幕助手（Python 版）")
-        width, height = 1080, 790
+        width, height = 1080, 820
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
         x = max(0, (screen_w - width) // 2)
@@ -207,8 +209,8 @@ class BiliSendApp(tk.Tk):
             wrap="char",
             relief="solid",
             borderwidth=1,
-            undo=True,
             font=("Consolas", 9),
+            state="disabled",
         )
         self.cookie_text.grid(row=0, column=0, sticky="ew")
         cookie_scroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.cookie_text.yview)
@@ -217,8 +219,29 @@ class BiliSendApp(tk.Tk):
         self.cookie_text.bind("<KeyRelease>", lambda _event: self._refresh_cookie_status())
         self.cookie_text.bind("<FocusOut>", lambda _event: self._refresh_cookie_status())
 
+        cookie_options = ttk.Frame(cookie_box)
+        cookie_options.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+
+        self.show_cookie_var = tk.BooleanVar(value=False)
+        self.show_cookie_check = ttk.Checkbutton(
+            cookie_options, text="显示 Cookie", variable=self.show_cookie_var,
+            command=self._on_toggle_show_cookie,
+        )
+        self.show_cookie_check.pack(side="left")
+
+        self.save_cookie_var = tk.BooleanVar(value=True)
+        self.save_cookie_check = ttk.Checkbutton(
+            cookie_options, text="保存 Cookie 到 config.json", variable=self.save_cookie_var,
+            command=self._on_toggle_save_cookie,
+        )
+        self.save_cookie_check.pack(side="left", padx=(18, 0))
+
+        ttk.Label(
+            cookie_options, text="默认打码显示；录屏演示时建议取消保存", style="Muted.TLabel"
+        ).pack(side="left", padx=(14, 0))
+
         cookie_tools = ttk.Frame(cookie_box)
-        cookie_tools.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        cookie_tools.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         ttk.Button(cookie_tools, text="粘贴剪贴板", command=self._paste_cookie).pack(side="left")
         ttk.Button(cookie_tools, text="清空", command=self._clear_cookie).pack(side="left", padx=6)
         self.cookie_status_var = tk.StringVar()
@@ -367,6 +390,8 @@ class BiliSendApp(tk.Tk):
             self.font_spin,
             self.position_combo,
             self.avoid_repeat_check,
+            self.show_cookie_check,
+            self.save_cookie_check,
         ]
         for widget in mode_frame.winfo_children():
             self._lockable.append(widget)
@@ -486,9 +511,8 @@ class BiliSendApp(tk.Tk):
     def _load_config_into_ui(self) -> None:
         cfg = self.cfg
         self.room_var.set(str(cfg.room_id))
-        self.cookie_text.delete("1.0", "end")
-        if cfg.cookie:
-            self.cookie_text.insert("1.0", cfg.cookie)
+        self.save_cookie_var.set(bool(cfg.save_cookie))
+        self._set_cookie_value(cfg.cookie, hide=True)
         self.interval_var.set(_format_number(cfg.interval_seconds))
         self.mode_var.set(cfg.mode)
         self.msg_path_var.set(cfg.messages_file)
@@ -518,7 +542,7 @@ class BiliSendApp(tk.Tk):
         if not room_text.isdigit() or int(room_text) <= 0:
             return fail("房间号必须是正整数，例如 22676119。")
 
-        cookie = self.cookie_text.get("1.0", "end").strip()
+        cookie = self._cookie_text_now()
         if not cookie and not silent:
             return fail("请先填写账号 Cookie（需要包含 SESSDATA 与 bili_jct）。")
 
@@ -550,6 +574,7 @@ class BiliSendApp(tk.Tk):
 
         self.cfg = AppConfig(
             cookie=cookie,
+            save_cookie=bool(self.save_cookie_var.get()),
             room_id=int(room_text),
             interval_seconds=interval,
             mode=mode,
@@ -622,23 +647,75 @@ class BiliSendApp(tk.Tk):
         raise ValueError("弹幕位置只能是 滚动(1)、顶部(5) 或 底部(4)。")
 
     # ---------------------------------------------------------------- Cookie
+    def _set_cookie_value(self, value: str, hide: bool = True) -> None:
+        """设置 Cookie 内容；hide=True 时界面上只显示打码文本。"""
+        self._cookie_value = (value or "").strip()
+        self._cookie_hidden = hide
+        self._render_cookie_text()
+
+    def _render_cookie_text(self) -> None:
+        widget = self.cookie_text
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        if self._cookie_hidden:
+            widget.insert("1.0", mask_cookie(self._cookie_value))
+        else:
+            widget.insert("1.0", self._cookie_value)
+        widget.configure(state="normal" if not self._cookie_hidden and not self._running else "disabled")
+
+    def _cookie_text_now(self) -> str:
+        if self._cookie_hidden:
+            return self._cookie_value
+        return self.cookie_text.get("1.0", "end").strip()
+
+    def _sync_cookie_value(self) -> None:
+        if not self._cookie_hidden:
+            self._cookie_value = self.cookie_text.get("1.0", "end").strip()
+
+    def _on_toggle_show_cookie(self) -> None:
+        if self._running:
+            return
+        if self.show_cookie_var.get():
+            self._cookie_hidden = False
+        else:
+            self._sync_cookie_value()
+            self._cookie_hidden = True
+        self._render_cookie_text()
+        self._refresh_cookie_status()
+
+    def _on_toggle_save_cookie(self) -> None:
+        self.cfg.save_cookie = bool(self.save_cookie_var.get())
+        if self.save_cookie_var.get():
+            log.info("已开启 Cookie 保存，下次启动会自动填入")
+        else:
+            self._scrub_saved_cookie()
+            log.info("已关闭 Cookie 保存，并清除 config.json 中的 Cookie")
+
+    def _scrub_saved_cookie(self) -> None:
+        cfg = self.cfg.copy()
+        cfg.cookie = ""
+        cfg.save_cookie = False
+        try:
+            save_config(cfg)
+        except OSError as exc:
+            log.warning("清除 config.json 中的 Cookie 失败：%s", exc)
+
     def _paste_cookie(self) -> None:
         try:
             text = self.clipboard_get()
         except tk.TclError:
             messagebox.showinfo("剪贴板为空", "剪贴板里没有文本内容。")
             return
-        self.cookie_text.delete("1.0", "end")
-        self.cookie_text.insert("1.0", text.strip())
+        self._set_cookie_value(text, hide=self._cookie_hidden)
         self._refresh_cookie_status()
         log.info("已从剪贴板粘贴 Cookie（%d 个键）", len(parse_cookie(text)))
 
     def _clear_cookie(self) -> None:
-        self.cookie_text.delete("1.0", "end")
+        self._set_cookie_value("", hide=self._cookie_hidden)
         self._refresh_cookie_status()
 
     def _refresh_cookie_status(self) -> None:
-        raw = self.cookie_text.get("1.0", "end").strip()
+        raw = self._cookie_text_now()
         warnings = cookie_warnings(raw)
         if not raw:
             self.cookie_status_var.set("尚未填写 Cookie")
@@ -648,8 +725,11 @@ class BiliSendApp(tk.Tk):
             self.cookie_status_var.set("⚠ " + "；".join(warnings))
             self.cookie_status_label.configure(style="Bad.TLabel")
             return
-        uid = parse_cookie(raw).get("DedeUserID", "")
-        self.cookie_status_var.set(f"✔ Cookie 可用（UID {uid}）" if uid else "✔ Cookie 可用")
+        if self._cookie_hidden:
+            self.cookie_status_var.set("✔ Cookie 可用（已打码）")
+        else:
+            uid = parse_cookie(raw).get("DedeUserID", "")
+            self.cookie_status_var.set(f"✔ Cookie 可用（UID {uid}）" if uid else "✔ Cookie 可用")
         self.cookie_status_label.configure(style="Good.TLabel")
 
     # ------------------------------------------------------------- 消息库操作
@@ -875,7 +955,7 @@ class BiliSendApp(tk.Tk):
             return
 
         try:
-            save_config(self.cfg)
+            save_config(self.cfg.storage_copy())
         except OSError as exc:
             log.warning("保存配置失败：%s", exc)
 
@@ -954,7 +1034,7 @@ class BiliSendApp(tk.Tk):
         if not room_text.isdigit() or int(room_text) <= 0:
             messagebox.showerror("房间号无效", "房间号必须是正整数，例如 22676119。")
             return
-        cookie = self.cookie_text.get("1.0", "end").strip()
+        cookie = self._cookie_text_now()
         if not cookie:
             messagebox.showinfo("缺少 Cookie", "查询直播间信息也需要 Cookie，请先填写。")
             return
@@ -1100,7 +1180,9 @@ class BiliSendApp(tk.Tk):
         for widget in self._lockable:
             if not isinstance(widget, (tk.Text, ttk.Widget)):
                 continue
-            if running:
+            if widget is self.cookie_text:
+                state = "normal" if not running and not self._cookie_hidden else "disabled"
+            elif running:
                 state = "disabled"
             elif widget is self.position_combo:
                 state = "readonly"
@@ -1166,7 +1248,7 @@ class BiliSendApp(tk.Tk):
             self.runner.join(3.0)
         self._collect_config(silent=True)
         try:
-            save_config(self.cfg)
+            save_config(self.cfg.storage_copy())
         except OSError as exc:
             log.warning("保存配置失败：%s", exc)
         self.destroy()

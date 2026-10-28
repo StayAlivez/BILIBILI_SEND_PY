@@ -57,6 +57,34 @@ def git_credential_token() -> str:
     return ""
 
 
+def auto_release_notes(tag: str, repo: str) -> str:
+    """没提供说明文件时，用 git log 生成更新内容。"""
+    previous = ""
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0", f"{tag}^"],
+            capture_output=True, text=True, cwd=ROOT,
+        )
+        if result.returncode == 0:
+            previous = result.stdout.strip()
+    except OSError:
+        pass
+
+    rev_range = f"{previous}..{tag}" if previous else tag
+    try:
+        result = subprocess.run(
+            ["git", "log", "--pretty=format:- %s (%h)", rev_range],
+            capture_output=True, text=True, cwd=ROOT,
+        )
+        lines = result.stdout.strip()
+    except OSError:
+        lines = ""
+    body = "## 更新内容\n\n" + (lines or "- 维护更新")
+    if previous:
+        body += f"\n\n**完整变更**：https://github.com/{repo}/compare/{previous}...{tag}"
+    return body
+
+
 def get_token() -> str:
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
     if token:
@@ -129,8 +157,14 @@ def main() -> int:
         raise SystemExit(f"找不到要上传的文件：{asset}")
 
     body = ""
-    if args.notes and args.notes.exists():
-        body = args.notes.read_text(encoding="utf-8-sig").strip()
+    if args.notes:
+        if args.notes.exists():
+            body = args.notes.read_text(encoding="utf-8-sig").strip()
+        else:
+            print(f"[i] 说明文件不存在，改为自动生成：{args.notes}")
+    if not body:
+        body = auto_release_notes(args.tag, args.repo)
+        print("已根据 git log 生成 Release 说明")
 
     existing = None
     try:

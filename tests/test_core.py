@@ -40,6 +40,7 @@ from bili_send.client import (  # noqa: E402
     RoomInfo,
     SendResult,
     cookie_warnings,
+    mask_cookie,
     parse_cookie,
 )
 from bili_send.config import AppConfig, load_config, save_config  # noqa: E402
@@ -182,6 +183,24 @@ class CookieTests(unittest.TestCase):
 
     def test_empty_cookie_warns(self) -> None:
         self.assertTrue(cookie_warnings(""))
+
+    def test_mask_hides_values(self) -> None:
+        masked = mask_cookie(GOOD_COOKIE)
+        self.assertIn("SESSDATA=", masked)
+        self.assertIn("bili_jct=", masked)
+        self.assertIn("••••••••", masked)
+        self.assertNotIn("abc%2C123", masked)
+        self.assertNotIn("deadbeef", masked)
+        self.assertNotIn("57796390", masked)
+
+    def test_mask_empty_cookie(self) -> None:
+        self.assertEqual(mask_cookie(""), "")
+
+    def test_mask_unknown_keys_only(self) -> None:
+        masked = mask_cookie("foo=bar; baz=qux")
+        self.assertIn("2 项 Cookie 已隐藏", masked)
+        self.assertNotIn("bar", masked)
+        self.assertNotIn("qux", masked)
 
 
 class ClientSendTests(unittest.TestCase):
@@ -407,6 +426,20 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.fontsize, 64)
         self.assertEqual(cfg.mode, "weighted")
         self.assertEqual(cfg.room_id, 22676119)
+
+    def test_storage_copy_drops_cookie_when_save_disabled(self) -> None:
+        cfg = AppConfig(cookie=GOOD_COOKIE, save_cookie=False)
+        self.assertEqual(cfg.storage_copy().cookie, "")
+        cfg.save_cookie = True
+        self.assertEqual(cfg.storage_copy().cookie, GOOD_COOKIE)
+
+    def test_save_cookie_defaults_to_true(self) -> None:
+        self.assertTrue(AppConfig().save_cookie)
+
+    def test_save_cookie_roundtrip(self) -> None:
+        save_config(AppConfig(cookie=GOOD_COOKIE, save_cookie=False), self.path)
+        loaded = load_config(self.path)
+        self.assertFalse(loaded.save_cookie)
 
 
 if __name__ == "__main__":
