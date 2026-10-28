@@ -20,7 +20,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Any
 
-from .client import BilibiliClient, BilibiliError, RoomInfo, cookie_warnings, mask_cookie, parse_cookie
+from .client import BilibiliClient, BilibiliError, RoomInfo, cookie_warnings, parse_cookie
 from .config import (
     APP_DIR,
     DEFAULT_MESSAGES_FILE,
@@ -203,6 +203,13 @@ class BiliSendApp(tk.Tk):
         text_frame.grid(row=0, column=0, sticky="ew")
         text_frame.columnconfigure(0, weight=1)
 
+        # 打码状态用密码框：可以直接输入/粘贴，只是显示成圆点
+        self.cookie_entry = ttk.Entry(text_frame, show="•", font=("Consolas", 10))
+        self.cookie_entry.grid(row=0, column=0, sticky="ew")
+        self.cookie_entry.bind("<KeyRelease>", lambda _event: self._refresh_cookie_status())
+        self.cookie_entry.bind("<<Paste>>", lambda _event: self.after_idle(self._refresh_cookie_status))
+
+        # 显示状态切成多行文本，方便查看/编辑很长的 Cookie
         self.cookie_text = tk.Text(
             text_frame,
             height=4,
@@ -212,12 +219,16 @@ class BiliSendApp(tk.Tk):
             font=("Consolas", 9),
             state="disabled",
         )
+        self.cookie_scroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.cookie_text.yview)
+        self.cookie_text.configure(yscrollcommand=self.cookie_scroll.set)
+        # 先放好位置再隐藏，切换「显示 Cookie」时能原样恢复
         self.cookie_text.grid(row=0, column=0, sticky="ew")
-        cookie_scroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.cookie_text.yview)
-        cookie_scroll.grid(row=0, column=1, sticky="ns")
-        self.cookie_text.configure(yscrollcommand=cookie_scroll.set)
+        self.cookie_scroll.grid(row=0, column=1, sticky="ns")
+        self.cookie_text.grid_remove()
+        self.cookie_scroll.grid_remove()
         self.cookie_text.bind("<KeyRelease>", lambda _event: self._refresh_cookie_status())
         self.cookie_text.bind("<FocusOut>", lambda _event: self._refresh_cookie_status())
+        self.cookie_text.bind("<<Paste>>", lambda _event: self.after_idle(self._refresh_cookie_status))
 
         cookie_options = ttk.Frame(cookie_box)
         cookie_options.grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -237,7 +248,7 @@ class BiliSendApp(tk.Tk):
         self.save_cookie_check.pack(side="left", padx=(18, 0))
 
         ttk.Label(
-            cookie_options, text="默认打码显示；录屏演示时建议取消保存", style="Muted.TLabel"
+            cookie_options, text="打码时也能直接输入/粘贴；录屏演示时建议取消保存", style="Muted.TLabel"
         ).pack(side="left", padx=(14, 0))
 
         cookie_tools = ttk.Frame(cookie_box)
@@ -383,6 +394,7 @@ class BiliSendApp(tk.Tk):
         self._lockable = [
             self.room_entry,
             self.detect_btn,
+            self.cookie_entry,
             self.cookie_text,
             self.interval_spin,
             self.msg_path_entry,
@@ -648,40 +660,51 @@ class BiliSendApp(tk.Tk):
 
     # ---------------------------------------------------------------- Cookie
     def _set_cookie_value(self, value: str, hide: bool = True) -> None:
-        """设置 Cookie 内容；hide=True 时界面上只显示打码文本。"""
+        """设置 Cookie 内容；hide=True 时用密码框显示成圆点，但仍可编辑。"""
         self._cookie_value = (value or "").strip()
         self._cookie_hidden = hide
-        self._render_cookie_text()
+        self._render_cookie_widget()
 
-    def _render_cookie_text(self) -> None:
-        widget = self.cookie_text
-        widget.configure(state="normal")
-        widget.delete("1.0", "end")
+    def _render_cookie_widget(self) -> None:
+        value = self._cookie_value
         if self._cookie_hidden:
-            widget.insert("1.0", mask_cookie(self._cookie_value))
+            self.cookie_entry.delete(0, "end")
+            self.cookie_entry.insert(0, value)
+            self.cookie_entry.icursor("end")
+            self.cookie_entry.grid()
+            self.cookie_entry.configure(state="disabled" if self._running else "normal")
+            self.cookie_text.grid_remove()
+            self.cookie_scroll.grid_remove()
         else:
-            widget.insert("1.0", self._cookie_value)
-        widget.configure(state="normal" if not self._cookie_hidden and not self._running else "disabled")
+            self.cookie_text.configure(state="normal")
+            self.cookie_text.delete("1.0", "end")
+            self.cookie_text.insert("1.0", value)
+            self.cookie_text.mark_set("insert", "end")
+            self.cookie_text.grid()
+            self.cookie_text.configure(state="disabled" if self._running else "normal")
+            self.cookie_entry.grid_remove()
+            self.cookie_scroll.grid()
 
     def _cookie_text_now(self) -> str:
         if self._cookie_hidden:
-            return self._cookie_value
+            return self.cookie_entry.get().strip()
         return self.cookie_text.get("1.0", "end").strip()
 
     def _sync_cookie_value(self) -> None:
-        if not self._cookie_hidden:
-            self._cookie_value = self.cookie_text.get("1.0", "end").strip()
+        self._cookie_value = self._cookie_text_now()
 
     def _on_toggle_show_cookie(self) -> None:
         if self._running:
             return
-        if self.show_cookie_var.get():
-            self._cookie_hidden = False
-        else:
-            self._sync_cookie_value()
-            self._cookie_hidden = True
-        self._render_cookie_text()
+        self._sync_cookie_value()
+        self._cookie_hidden = not bool(self.show_cookie_var.get())
+        self._render_cookie_widget()
         self._refresh_cookie_status()
+        if self._cookie_hidden:
+            self.cookie_entry.focus_set()
+            self.cookie_entry.icursor("end")
+        else:
+            self.cookie_text.focus_set()
 
     def _on_toggle_save_cookie(self) -> None:
         self.cfg.save_cookie = bool(self.save_cookie_var.get())
@@ -1180,8 +1203,8 @@ class BiliSendApp(tk.Tk):
         for widget in self._lockable:
             if not isinstance(widget, (tk.Text, ttk.Widget)):
                 continue
-            if widget is self.cookie_text:
-                state = "normal" if not running and not self._cookie_hidden else "disabled"
+            if widget is self.cookie_entry or widget is self.cookie_text:
+                state = "disabled" if running else "normal"
             elif running:
                 state = "disabled"
             elif widget is self.position_combo:

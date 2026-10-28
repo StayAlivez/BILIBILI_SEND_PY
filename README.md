@@ -9,7 +9,7 @@
 
 **https://github.com/StayAlivez/BILIBILI_SEND_PY/releases**
 
-- 包名：`BILIBILI_SEND_PY_v1.1.1_portable_win64.zip`
+- 包名：`BILIBILI_SEND_PY_v1.1.2_portable_win64.zip`
 - 内置 Python 3.11.9 运行时（含 tkinter），解压后双击 `run.bat` 即可，**无需安装 Python**
 - 仅支持 Windows 10 / 11 64 位
 - 如果双击没反应，改双击 `debug.bat`，控制台里会显示具体报错
@@ -65,7 +65,7 @@
 
 ### 录屏 / 演示时的隐私
 
-- Cookie 框默认只显示 `SESSDATA=••••••••` 这样的打码文本，**不会把值显示在屏幕上**。
+- Cookie 框默认是密码框，只显示圆点；仍可直接输入或粘贴，**不会把值显示在屏幕上**。
 - 只有勾选「显示 Cookie」才会明文显示；录完记得再取消勾选。
 - 「保存 Cookie 到 config.json」默认开启。录屏前建议取消勾选：程序会立即清除配置文件里已保存的 Cookie，之后启动也不会自动填入。
 - 打码状态下，状态栏只显示「Cookie 可用（已打码）」，不显示 UID。
@@ -146,7 +146,7 @@ py -3 tools/build_portable.py --python-home "C:\...\pythoncore-3.11-64" --proxy 
 ```
 
 脚本会下载官方 embeddable 包（缓存到 `.cache/`）、补入 tkinter / Tcl / Tk，
-自检通过后输出 `dist/BILIBILI_SEND_PY_v1.1.1_portable_win64.zip`。
+自检通过后输出 `dist/BILIBILI_SEND_PY_v1.1.2_portable_win64.zip`。
 
 ## 注意事项
 
