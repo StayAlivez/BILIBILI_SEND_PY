@@ -99,6 +99,8 @@ POSITION_PRESETS: list[tuple[str, int]] = [
 POSITION_NAMES = {1: "滚动", 4: "底部", 5: "顶部"}
 POLL_MS = 120
 TASK_REFRESH_EVERY = 4  # 每 4 次轮询刷新一次任务表（约 0.5 秒）
+HISTORY_POLL_SECONDS = 2.0
+HISTORY_MAX_ROWS = 500
 
 
 @dataclass
@@ -147,6 +149,10 @@ class BiliSendApp(tk.Tk):
         self._log_photos: list[tk.PhotoImage] = []
         self._history_items: list[HistoryDanmaku] = []
         self._history_task_id = ""
+        self._history_keys: set[tuple[str, str, str]] = set()
+        self._history_live = False
+        self._history_stop: threading.Event | None = None
+        self._history_thread: threading.Thread | None = None
         self._novel_book: NovelBook | None = None
         self._novel_task_id: str | None = None
         self._running_ui = False
@@ -713,9 +719,9 @@ class BiliSendApp(tk.Tk):
         head.grid(row=0, column=0, sticky="ew")
         self.history_header_var = tk.StringVar(value="当前任务：—")
         ttk.Label(head, textvariable=self.history_header_var).pack(side="left")
-        self.history_status_var = tk.StringVar(value="点右侧「拉取弹幕」读取直播间最近弹幕。")
+        self.history_status_var = tk.StringVar(value="打开此页会自动开始实时滚动。")
         ttk.Label(head, textvariable=self.history_status_var, style="Muted.TLabel").pack(side="left", padx=12)
-        self.history_fetch_btn = ttk.Button(head, text="拉取弹幕", command=self._fetch_history)
+        self.history_fetch_btn = ttk.Button(head, text="开始实时", command=self._toggle_history_live)
         self.history_fetch_btn.pack(side="right")
 
         tools = ttk.Frame(tab)
@@ -725,7 +731,11 @@ class BiliSendApp(tk.Tk):
         )
         self.history_repeat_btn.pack(side="left")
         ttk.Button(tools, text="清空列表", command=self._clear_history).pack(side="left", padx=(8, 0))
-        ttk.Label(tools, text="双击某条弹幕也可以直接复读", style="Muted.TLabel").pack(side="left", padx=12)
+        ttk.Label(tools, text=f"每 {HISTORY_POLL_SECONDS:g} 秒刷新；双击弹幕直接复读", style="Muted.TLabel").pack(
+            side="left", padx=12
+        )
+        self.history_autoscroll_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(tools, text="自动滚动", variable=self.history_autoscroll_var).pack(side="right")
 
         body = ttk.Frame(tab)
         body.grid(row=2, column=0, sticky="nsew")
@@ -753,47 +763,120 @@ class BiliSendApp(tk.Tk):
         task = self._active_task()
         self.history_header_var.set(f"当前任务：{task.display_name}｜房间 {task.room_id}")
         if self._history_task_id and self._history_task_id != task.id:
+            self._stop_history_live(quiet=True)
             self._history_task_id = ""
-            self._history_items = []
             self._render_history([])
-            self.history_status_var.set("任务已切换，请重新拉取。")
+            self.history_status_var.set("任务已切换，已停止实时。")
+        if self.notebook.index("current") == 5 and not self._history_live:
+            self.after(80, self._start_history_live)
 
-    def _fetch_history(self) -> None:
+    def _toggle_history_live(self) -> None:
+        if self._history_live:
+            self._stop_history_live()
+        else:
+            self._start_history_live()
+
+    def _start_history_live(self) -> None:
+        if self._history_live or not self.winfo_exists():
+            return
+        if self.notebook.index("current") != 5:
+            return
         if not self._sync_active_task_from_widgets(silent=True):
-            messagebox.showerror("设置不完整", "请先填写当前任务的房间号。")
+            self.history_status_var.set("请先补全房间号和 Cookie。")
             return
         task = self._active_task().copy()
         if not task.cookie:
-            self.history_status_var.set("拉取直播间弹幕需要当前任务的 Cookie。")
+            self.history_status_var.set("实时弹幕需要当前任务的 Cookie。")
             return
-        self.history_fetch_btn.configure(state="disabled")
-        self.history_status_var.set("正在拉取直播间弹幕…")
+
+        self._stop_history_live(quiet=True)
+        if self._history_task_id != task.id:
+            self._render_history([])
+        self._history_task_id = task.id
+        stop = threading.Event()
+        self._history_stop = stop
+        self._history_live = True
+        self.history_fetch_btn.configure(text="停止实时")
+        self.history_status_var.set("正在连接直播间弹幕…")
 
         def worker() -> None:
             client = BilibiliClient(task.cookie, timeout=10.0)
             try:
                 room = client.resolve_room(task.room_id)
-                items = client.get_room_history(room.room_id, 60)
-                self.events.put({"kind": "history", "ok": True, "items": items, "task_id": task.id})
+                while not stop.is_set():
+                    try:
+                        items = client.get_room_history(room.room_id, 60)
+                    except BilibiliError as exc:
+                        self.events.put(
+                            {"kind": "history_live_error", "message": str(exc), "task_id": task.id}
+                        )
+                        return
+                    self.events.put(
+                        {"kind": "history_live", "items": items, "task_id": task.id}
+                    )
+                    if stop.wait(HISTORY_POLL_SECONDS):
+                        return
             except BilibiliError as exc:
-                self.events.put({"kind": "history", "ok": False, "message": str(exc), "task_id": task.id})
+                self.events.put(
+                    {"kind": "history_live_error", "message": str(exc), "task_id": task.id}
+                )
             except Exception as exc:  # noqa: BLE001
-                log.exception("拉取直播间弹幕异常")
-                self.events.put({"kind": "history", "ok": False, "message": str(exc), "task_id": task.id})
+                log.exception("实时弹幕异常")
+                self.events.put(
+                    {"kind": "history_live_error", "message": str(exc), "task_id": task.id}
+                )
 
-        threading.Thread(target=worker, name="room-history", daemon=True).start()
+        thread = threading.Thread(target=worker, name="room-history-live", daemon=True)
+        self._history_thread = thread
+        thread.start()
 
-    def _render_history(self, items: list[HistoryDanmaku]) -> None:
-        for iid in self.history_tree.get_children():
-            self.history_tree.delete(iid)
-        for index, item in enumerate(reversed(items)):
+    def _stop_history_live(self, quiet: bool = False) -> None:
+        was_live = self._history_live
+        self._history_live = False
+        if self._history_stop is not None:
+            self._history_stop.set()
+            self._history_stop = None
+        self._history_thread = None
+        self.history_fetch_btn.configure(text="开始实时")
+        if not quiet and was_live:
+            self.history_status_var.set("实时已停止。")
+
+    def _append_history_items(self, items: list[HistoryDanmaku]) -> None:
+        added = 0
+        for item in items:
+            key = (item.uid, item.text, item.timeline)
+            if key in self._history_keys:
+                continue
+            self._history_keys.add(key)
+            index = len(self._history_items)
+            self._history_items.append(item)
             kind = "表情" if item.dm_type == 1 else ("房管" if item.is_admin else "弹幕")
             self.history_tree.insert(
                 "", "end", iid=str(index),
                 values=(item.timeline, item.nickname or item.uid, item.text, kind),
             )
-        self._history_items = list(reversed(items))
-        self.history_status_var.set(f"共 {len(items)} 条；双击或选中后点「复读选中」。")
+            added += 1
+        if len(self._history_items) > HISTORY_MAX_ROWS:
+            self._render_history(self._history_items[-HISTORY_MAX_ROWS:])
+        elif added and self.history_autoscroll_var.get():
+            self.history_tree.see(str(len(self._history_items) - 1))
+        self.history_status_var.set(
+            f"实时滚动中 · 每 {HISTORY_POLL_SECONDS:g} 秒 · 共 {len(self._history_items)} 条"
+        )
+
+    def _render_history(self, items: list[HistoryDanmaku]) -> None:
+        for iid in self.history_tree.get_children():
+            self.history_tree.delete(iid)
+        self._history_items = list(items)
+        self._history_keys = {(item.uid, item.text, item.timeline) for item in items}
+        for index, item in enumerate(items):
+            kind = "表情" if item.dm_type == 1 else ("房管" if item.is_admin else "弹幕")
+            self.history_tree.insert(
+                "", "end", iid=str(index),
+                values=(item.timeline, item.nickname or item.uid, item.text, kind),
+            )
+        if items:
+            self.history_status_var.set(f"共 {len(items)} 条；双击或选中后点「复读选中」。")
         self._on_history_select(None)
 
     def _on_history_select(self, _event: Any) -> None:
@@ -827,8 +910,9 @@ class BiliSendApp(tk.Tk):
         )
 
     def _clear_history(self) -> None:
+        self._stop_history_live(quiet=True)
         self._render_history([])
-        self.history_status_var.set("已清空。")
+        self.history_status_var.set("已清空并停止实时，点「开始实时」重新连接。")
 
     # ------------------------------------------------------------------ 日志页
     def _build_log_tab(self) -> None:
@@ -1700,16 +1784,16 @@ class BiliSendApp(tk.Tk):
             self.detect_btn.configure(state="normal")
             self.room_info_var.set(f"检测失败：{event.get('message')}")
             log.warning("检测直播间失败：%s", event.get("message"))
-        elif kind == "history":
-            self.history_fetch_btn.configure(state="normal")
+        elif kind == "history_live":
+            if not self._history_live or (task_id and task_id != self._active_task().id):
+                return
+            self._append_history_items(list(event.get("items") or []))
+        elif kind == "history_live_error":
             if task_id and task_id != self._active_task().id:
                 return
-            if event.get("ok"):
-                self._history_task_id = task_id or self._active_task().id
-                self._render_history(list(event.get("items") or []))
-            else:
-                self.history_status_var.set(f"拉取失败：{event.get('message', '')}")
-                log.warning("拉取直播间弹幕失败：%s", event.get("message", ""))
+            self._stop_history_live(quiet=True)
+            self.history_status_var.set(f"实时已停止：{event.get('message', '')}")
+            log.warning("实时弹幕停止：%s", event.get("message", ""))
         elif kind == "single":
             if event.get("target") == "single":
                 self.single_btn.configure(state="normal")
@@ -2597,12 +2681,16 @@ class BiliSendApp(tk.Tk):
         success(log, "日志已导出：%s", path)
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
-        if self.notebook.index("current") == 2:
+        current = self.notebook.index("current")
+        if current == 2:
             self._refresh_emote_header()
-        elif self.notebook.index("current") == 3:
+        elif current == 3:
             self._refresh_novel_summary()
-        elif self.notebook.index("current") == 5:
+        elif current == 5:
             self._refresh_history_header()
+            self._start_history_live()
+        elif self._history_live:
+            self._stop_history_live()
 
     def _on_callback_error(self, exc_type: type, exc_value: BaseException, tb: Any) -> None:
         text = "".join(traceback.format_exception(exc_type, exc_value, tb))
@@ -2610,6 +2698,7 @@ class BiliSendApp(tk.Tk):
         messagebox.showerror("程序异常", f"界面出现未捕获异常：\n{exc_value}\n\n详情见运行日志。")
 
     def _on_close(self) -> None:
+        self._stop_history_live(quiet=True)
         for runtime in list(self.runtimes.values()):
             runtime.runner.stop()
         for runtime in list(self.runtimes.values()):
