@@ -163,11 +163,11 @@ class BiliSendApp(tk.Tk):
     # ---------------------------------------------------------------- 窗口与样式
     def _setup_window(self) -> None:
         self.title("BILIBILI_SEND · 直播弹幕助手（Python 版）")
-        width, height = 1180, 860
+        width, height = 1180, 900
         x = max(0, (self.winfo_screenwidth() - width) // 2)
         y = max(0, (self.winfo_screenheight() - height) // 2 - 20)
         self.geometry(f"{width}x{height}+{x}+{y}")
-        self.minsize(1000, 720)
+        self.minsize(1000, 740)
 
     def _setup_style(self) -> None:
         for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
