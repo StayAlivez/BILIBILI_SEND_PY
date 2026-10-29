@@ -1,6 +1,7 @@
 {
   "save_cookie": true,
   "timeout_seconds": 5,
+  "history_interval_seconds": 2,
   "messages_file": "messages/weighted.json",
   "tasks": [
     {

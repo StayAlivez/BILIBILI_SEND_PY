@@ -64,11 +64,11 @@ def run_gui() -> int:
 
 
 def run_cli() -> int:
-    from bili_send.config import SOURCE_NOVEL, resolve_path, save_config
+    from bili_send.config import SOURCE_NOVEL, SOURCE_REPEAT, resolve_path, save_config
     from bili_send.messages import MessageFileError, MessagePool, load_messages
     from bili_send.novel import NovelError, load_book
     from bili_send.runner import DanmakuRunner
-    from bili_send.sources import NovelSource, PoolSource
+    from bili_send.sources import NovelSource, PoolSource, RepeatSource
 
     cfg = load_config()
     task = cfg.active_task
@@ -77,7 +77,10 @@ def run_cli() -> int:
         return 2
 
     try:
-        if task.source == SOURCE_NOVEL:
+        if task.source == SOURCE_REPEAT:
+            source = RepeatSource(task.interval_seconds)
+            summary = f"复读机（统计窗口 {task.interval_seconds:g} 秒）"
+        elif task.source == SOURCE_NOVEL:
             if not task.novel_path:
                 print("当前任务使用说书人模式，但还没有选择小说文件。")
                 return 2

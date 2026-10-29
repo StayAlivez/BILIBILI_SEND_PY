@@ -28,11 +28,14 @@ MODE_LABELS = {MODE_WEIGHTED: "按权重随机", MODE_UNIFORM: "完全随机"}
 
 SOURCE_POOL = "pool"
 SOURCE_NOVEL = "novel"
-SOURCES = (SOURCE_POOL, SOURCE_NOVEL)
-SOURCE_LABELS = {SOURCE_POOL: "弹幕池", SOURCE_NOVEL: "说书人"}
+SOURCE_REPEAT = "repeat"
+SOURCES = (SOURCE_POOL, SOURCE_NOVEL, SOURCE_REPEAT)
+SOURCE_LABELS = {SOURCE_POOL: "弹幕池", SOURCE_NOVEL: "说书人", SOURCE_REPEAT: "复读机"}
 
 MIN_INTERVAL_SECONDS = 1.0
 MAX_INTERVAL_SECONDS = 3600.0
+MIN_HISTORY_INTERVAL = 1.0
+MAX_HISTORY_INTERVAL = 60.0
 MIN_FONT_SIZE = 12
 MAX_FONT_SIZE = 64
 MAX_COLOR = 0xFFFFFF
@@ -153,6 +156,7 @@ class AppConfig:
     fontsize: int = 25
     danmaku_mode: int = 1
     timeout_seconds: float = 5.0
+    history_interval_seconds: float = 2.0
     room_title: str = ""
     anchor_name: str = ""
     tasks: list[TaskConfig] = field(default_factory=list)
@@ -286,12 +290,15 @@ def _normalize_app(cfg: AppConfig) -> None:
     cfg.fontsize = int(_clamp(cfg.fontsize, MIN_FONT_SIZE, MAX_FONT_SIZE))
     cfg.color = int(_clamp(cfg.color, 0, MAX_COLOR))
     cfg.timeout_seconds = _clamp(cfg.timeout_seconds, 1.0, 30.0)
+    cfg.history_interval_seconds = _clamp(
+        cfg.history_interval_seconds, MIN_HISTORY_INTERVAL, MAX_HISTORY_INTERVAL
+    )
     if cfg.room_id <= 0:
         cfg.room_id = DEFAULT_ROOM_ID
 
 
 _INT_FIELDS = {"room_id", "color", "fontsize", "danmaku_mode"}
-_FLOAT_FIELDS = {"interval_seconds", "timeout_seconds"}
+_FLOAT_FIELDS = {"interval_seconds", "timeout_seconds", "history_interval_seconds"}
 _BOOL_FIELDS = {"avoid_repeat", "save_cookie"}
 _STR_FIELDS = {"cookie", "mode", "messages_file", "room_title", "anchor_name"}
 

@@ -13,6 +13,7 @@ import sys
 import time
 import unittest
 import urllib.error
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs
@@ -39,6 +40,7 @@ from bili_send.client import (  # noqa: E402
     BilibiliClient,
     DanmakuConfig,
     DanmakuOption,
+    HistoryDanmaku,
     LoginStatus,
     RoomInfo,
     SendResult,
@@ -49,6 +51,7 @@ from bili_send.client import (  # noqa: E402
 from bili_send.config import (  # noqa: E402
     SOURCE_NOVEL,
     SOURCE_POOL,
+    SOURCE_REPEAT,
     AppConfig,
     TaskConfig,
     load_config,
@@ -63,7 +66,7 @@ from bili_send.messages import (  # noqa: E402
 )
 from bili_send.novel import NovelBook, load_book, split_text  # noqa: E402
 from bili_send.runner import DanmakuRunner  # noqa: E402
-from bili_send.sources import NovelSource, PoolSource  # noqa: E402
+from bili_send.sources import NovelSource, PoolSource, RepeatSource  # noqa: E402
 
 GOOD_COOKIE = "SESSDATA=abc%2C123; bili_jct=deadbeef; DedeUserID=57796390"
 
@@ -724,6 +727,93 @@ class NovelRunnerTests(unittest.TestCase):
         self.assertTrue(self._wait_for(lambda: not runner.running))
         self.assertEqual(runner.effective_mode, 1)
         self.assertEqual(runner.effective_color, 16777215)
+
+
+class RepeatSourceTests(unittest.TestCase):
+    class HistoryClient:
+        uid = "999"
+
+        def __init__(self, items: list[HistoryDanmaku]) -> None:
+            self.items = items
+            self.calls = 0
+
+        def get_room_history(self, room_id: int, limit: int = 60) -> list[HistoryDanmaku]:
+            self.calls += 1
+            return list(self.items)
+
+    @staticmethod
+    def _ts(seconds_ago: float) -> str:
+        return (datetime.now() - timedelta(seconds=seconds_ago)).strftime("%Y-%m-%d %H:%M:%S")
+
+    def test_picks_most_frequent_in_window(self) -> None:
+        client = self.HistoryClient(
+            [
+                HistoryDanmaku("1", "A", "666", self._ts(1)),
+                HistoryDanmaku("2", "B", "666", self._ts(2)),
+                HistoryDanmaku("3", "C", "888", self._ts(3)),
+                HistoryDanmaku("4", "D", "太旧了", self._ts(30)),
+                HistoryDanmaku("999", "自己", "666", self._ts(1)),
+                HistoryDanmaku("5", "E", "[妙]", self._ts(1), dm_type=1),
+            ]
+        )
+        source = RepeatSource(10, limit=100).bind(client, 1)
+        item = source.next()
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertEqual(item.text, "666")
+        self.assertEqual(source.last_count, 2)
+        source.advance()
+        self.assertEqual(source.sent, 1)
+        self.assertIn("666", source.progress_text())
+
+    def test_no_available_messages_returns_none(self) -> None:
+        client = self.HistoryClient(
+            [
+                HistoryDanmaku("1", "A", "旧", self._ts(60)),
+                HistoryDanmaku("2", "B", "[妙]", self._ts(1), dm_type=1),
+            ]
+        )
+        source = RepeatSource(10).bind(client, 1)
+        self.assertIsNone(source.next())
+        self.assertIn("等待", source.progress_text())
+
+    def test_source_roundtrip_and_history_interval_clamp(self) -> None:
+        task = TaskConfig.from_dict({"source": SOURCE_REPEAT, "interval_seconds": 12})
+        self.assertEqual(task.source, SOURCE_REPEAT)
+        self.assertEqual(task.interval_seconds, 12)
+        cfg = AppConfig.from_dict({"history_interval_seconds": 99})
+        self.assertEqual(cfg.history_interval_seconds, 60)
+        cfg = AppConfig.from_dict({"history_interval_seconds": 0})
+        self.assertEqual(cfg.history_interval_seconds, 1)
+
+
+class EmptyRepeatRunnerTests(unittest.TestCase):
+    class EmptySource:
+        finished = False
+
+        def next(self):
+            return None
+
+        def advance(self) -> None:
+            return None
+
+        def progress_text(self) -> str:
+            return "复读机：等待弹幕"
+
+    def test_runner_skips_round_when_source_has_no_message(self) -> None:
+        client = FakeClient()
+        task = TaskConfig(
+            id="t1", name="复读", room_id=1, cookie=GOOD_COOKIE,
+            interval_seconds=0.02, source=SOURCE_REPEAT,
+        )
+        events: "queue.Queue[dict]" = queue.Queue()
+        runner = DanmakuRunner(task, self.EmptySource(), events, client=client)
+        runner.start()
+        time.sleep(0.12)
+        runner.stop()
+        runner.join(1.0)
+        self.assertEqual(client.sent, [])
+        self.assertFalse(runner.running)
 
 
 if __name__ == "__main__":

@@ -119,6 +119,9 @@ class DanmakuRunner:
             self.dm_config = client.get_danmaku_config(room.room_id)
             self.emit("permissions", config=self.dm_config)
             self._apply_permissions(room)
+            bind = getattr(self.source, "bind", None)
+            if callable(bind):
+                bind(client, room.room_id)
 
             self.emit("room", room=room)
             log.info(
@@ -203,6 +206,16 @@ class DanmakuRunner:
             except StopIteration:
                 completed = True
                 break
+
+            if item is None:
+                # 复读机在当前窗口内没有合适弹幕：不发送，等下一个间隔继续统计
+                self.emit("progress", total=self.total, ok=self.ok, failed=self.failed,
+                          source=self.source.progress_text())
+                self.next_send_at = time.monotonic() + task.interval_seconds
+                self.emit("schedule", next_at=self.next_send_at, interval=task.interval_seconds)
+                if self._stop.wait(task.interval_seconds):
+                    break
+                continue
 
             result = self._client.send_danmaku(
                 item.text,

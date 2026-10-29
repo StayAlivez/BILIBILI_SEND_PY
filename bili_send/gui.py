@@ -45,9 +45,11 @@ from .config import (
     DEFAULT_MESSAGES_FILE,
     MAX_COLOR,
     MAX_FONT_SIZE,
+    MAX_HISTORY_INTERVAL,
     MAX_INTERVAL_SECONDS,
     MAX_NOVEL_CHUNK,
     MIN_FONT_SIZE,
+    MIN_HISTORY_INTERVAL,
     MIN_INTERVAL_SECONDS,
     MIN_NOVEL_CHUNK,
     MODE_UNIFORM,
@@ -55,6 +57,7 @@ from .config import (
     SOURCE_LABELS,
     SOURCE_NOVEL,
     SOURCE_POOL,
+    SOURCE_REPEAT,
     AppConfig,
     TaskConfig,
     load_config,
@@ -73,7 +76,7 @@ from .messages import (
 )
 from .novel import MAX_CHUNK, NovelBook, NovelError, load_book, preview
 from .runner import DanmakuRunner
-from .sources import MessageSource, NovelSource, PoolSource
+from .sources import MessageSource, NovelSource, PoolSource, RepeatSource
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +102,6 @@ POSITION_PRESETS: list[tuple[str, int]] = [
 POSITION_NAMES = {1: "滚动", 4: "底部", 5: "顶部"}
 POLL_MS = 120
 TASK_REFRESH_EVERY = 4  # 每 4 次轮询刷新一次任务表（约 0.5 秒）
-HISTORY_POLL_SECONDS = 2.0
 HISTORY_MAX_ROWS = 500
 
 
@@ -354,6 +356,10 @@ class BiliSendApp(tk.Tk):
             source_frame, text="说书人", value=SOURCE_NOVEL, variable=self.source_var, command=self._on_source_changed
         )
         self.source_novel_radio.pack(side="left", padx=(10, 0))
+        self.source_repeat_radio = ttk.Radiobutton(
+            source_frame, text="复读机", value=SOURCE_REPEAT, variable=self.source_var, command=self._on_source_changed
+        )
+        self.source_repeat_radio.pack(side="left", padx=(10, 0))
 
         ttk.Label(set_box, text="发送间隔（秒）").grid(row=0, column=3, sticky="w")
         self.interval_var = tk.StringVar()
@@ -398,6 +404,20 @@ class BiliSendApp(tk.Tk):
             row=0, column=3, padx=(12, 0)
         )
         self.novel_frame.grid_remove()
+
+        self.repeat_frame = ttk.Frame(set_box)
+        self.repeat_frame.grid(row=1, column=0, columnspan=7, sticky="ew", pady=(8, 0))
+        ttk.Label(
+            self.repeat_frame,
+            text=(
+                "复读机：每个「发送间隔」内统计直播间弹幕，复读出现次数最多的一条；"
+                "没有合适弹幕时这一轮跳过。需要当前任务的 Cookie。"
+            ),
+            style="Muted.TLabel",
+            wraplength=1040,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w")
+        self.repeat_frame.grid_remove()
 
         ttk.Label(set_box, text="弹幕颜色").grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.color_var = tk.StringVar()
@@ -481,6 +501,7 @@ class BiliSendApp(tk.Tk):
             self.task_name_entry, self.room_entry, self.detect_btn, self.cookie_entry, self.cookie_text,
             self.interval_spin, self.messages_entry, self.color_combo, self.font_spin,
             self.position_combo, self.avoid_repeat_check, self.source_pool_radio, self.source_novel_radio,
+            self.source_repeat_radio,
             self.mode_weighted_radio, self.mode_uniform_radio, self.show_cookie_check,
         ]
 
@@ -731,11 +752,24 @@ class BiliSendApp(tk.Tk):
         )
         self.history_repeat_btn.pack(side="left")
         ttk.Button(tools, text="清空列表", command=self._clear_history).pack(side="left", padx=(8, 0))
-        ttk.Label(tools, text=f"每 {HISTORY_POLL_SECONDS:g} 秒刷新；双击弹幕直接复读", style="Muted.TLabel").pack(
+        ttk.Label(tools, text="实时刷新；双击弹幕直接复读", style="Muted.TLabel").pack(
             side="left", padx=12
         )
+        self.history_interval_var = tk.StringVar(value=_format_number(self.cfg.history_interval_seconds))
+        self.history_interval_spin = ttk.Spinbox(
+            tools,
+            from_=MIN_HISTORY_INTERVAL,
+            to=MAX_HISTORY_INTERVAL,
+            width=4,
+            textvariable=self.history_interval_var,
+            command=self._on_history_interval_changed,
+        )
+        self.history_interval_spin.pack(side="right", padx=(0, 6))
+        self.history_interval_spin.bind("<FocusOut>", lambda _e: self._on_history_interval_changed())
+        self.history_interval_spin.bind("<Return>", lambda _e: self._on_history_interval_changed())
+        ttk.Label(tools, text="刷新间隔（秒）", style="Muted.TLabel").pack(side="right", padx=(0, 6))
         self.history_autoscroll_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(tools, text="自动滚动", variable=self.history_autoscroll_var).pack(side="right")
+        ttk.Checkbutton(tools, text="自动滚动", variable=self.history_autoscroll_var).pack(side="right", padx=(0, 12))
 
         body = ttk.Frame(tab)
         body.grid(row=2, column=0, sticky="nsew")
@@ -770,6 +804,22 @@ class BiliSendApp(tk.Tk):
         if self.notebook.index("current") == 5 and not self._history_live:
             self.after(80, self._start_history_live)
 
+    def _history_poll_seconds(self) -> float:
+        try:
+            value = float(self.history_interval_var.get())
+        except (TypeError, ValueError):
+            value = self.cfg.history_interval_seconds
+        return max(MIN_HISTORY_INTERVAL, min(MAX_HISTORY_INTERVAL, value))
+
+    def _on_history_interval_changed(self) -> None:
+        value = self._history_poll_seconds()
+        self.history_interval_var.set(_format_number(value))
+        if abs(value - self.cfg.history_interval_seconds) > 0.01:
+            self.cfg.history_interval_seconds = value
+            if self._history_live:
+                self._stop_history_live(quiet=True)
+                self._start_history_live()
+
     def _toggle_history_live(self) -> None:
         if self._history_live:
             self._stop_history_live()
@@ -789,6 +839,7 @@ class BiliSendApp(tk.Tk):
             self.history_status_var.set("实时弹幕需要当前任务的 Cookie。")
             return
 
+        interval = self._history_poll_seconds()
         self._stop_history_live(quiet=True)
         if self._history_task_id != task.id:
             self._render_history([])
@@ -797,7 +848,7 @@ class BiliSendApp(tk.Tk):
         self._history_stop = stop
         self._history_live = True
         self.history_fetch_btn.configure(text="停止实时")
-        self.history_status_var.set("正在连接直播间弹幕…")
+        self.history_status_var.set(f"正在连接直播间弹幕…（每 {interval:g} 秒）")
 
         def worker() -> None:
             client = BilibiliClient(task.cookie, timeout=10.0)
@@ -814,7 +865,7 @@ class BiliSendApp(tk.Tk):
                     self.events.put(
                         {"kind": "history_live", "items": items, "task_id": task.id}
                     )
-                    if stop.wait(HISTORY_POLL_SECONDS):
+                    if stop.wait(interval):
                         return
             except BilibiliError as exc:
                 self.events.put(
@@ -861,7 +912,7 @@ class BiliSendApp(tk.Tk):
         elif added and self.history_autoscroll_var.get():
             self.history_tree.see(str(len(self._history_items) - 1))
         self.history_status_var.set(
-            f"实时滚动中 · 每 {HISTORY_POLL_SECONDS:g} 秒 · 共 {len(self._history_items)} 条"
+            f"实时滚动中 · 每 {self._history_poll_seconds():g} 秒 · 共 {len(self._history_items)} 条"
         )
 
     def _render_history(self, items: list[HistoryDanmaku]) -> None:
@@ -1063,7 +1114,11 @@ class BiliSendApp(tk.Tk):
         except ValueError:
             pass
         task.mode = self.mode_var.get() if self.mode_var.get() in (MODE_WEIGHTED, MODE_UNIFORM) else MODE_WEIGHTED
-        task.source = self.source_var.get() if self.source_var.get() in (SOURCE_POOL, SOURCE_NOVEL) else SOURCE_POOL
+        task.source = (
+            self.source_var.get()
+            if self.source_var.get() in (SOURCE_POOL, SOURCE_NOVEL, SOURCE_REPEAT)
+            else SOURCE_POOL
+        )
         try:
             task.color = self._parse_color(self.color_var.get())
         except ValueError:
@@ -1118,8 +1173,13 @@ class BiliSendApp(tk.Tk):
         task.room_id = int(room_text)
         task.cookie = cookie
         task.interval_seconds = interval
+        self.cfg.history_interval_seconds = self._history_poll_seconds()
         task.mode = self.mode_var.get() if self.mode_var.get() in (MODE_WEIGHTED, MODE_UNIFORM) else MODE_WEIGHTED
-        task.source = self.source_var.get() if self.source_var.get() in (SOURCE_POOL, SOURCE_NOVEL) else SOURCE_POOL
+        task.source = (
+            self.source_var.get()
+            if self.source_var.get() in (SOURCE_POOL, SOURCE_NOVEL, SOURCE_REPEAT)
+            else SOURCE_POOL
+        )
         task.color = color
         task.fontsize = fontsize
         task.danmaku_mode = position
@@ -1148,6 +1208,7 @@ class BiliSendApp(tk.Tk):
         self.color_var.set(self._color_label(task.color))
         self.font_var.set(str(task.fontsize))
         self.position_var.set(self._position_label(task.danmaku_mode))
+        self.history_interval_var.set(_format_number(self.cfg.history_interval_seconds))
         self.room_info_var.set(
             f"上次连接：{task.room_title or '未知'}（{task.anchor_name or '主播未知'}）"
             if (task.room_title or task.anchor_name)
@@ -1165,17 +1226,21 @@ class BiliSendApp(tk.Tk):
 
     # ------------------------------------------------------------------ 来源
     def _on_source_changed(self) -> None:
-        novel = self.source_var.get() == SOURCE_NOVEL
+        source = self.source_var.get()
         locked = self._active_running()
-        if novel:
-            self.pool_frame.grid_remove()
+        self.pool_frame.grid_remove()
+        self.novel_frame.grid_remove()
+        self.repeat_frame.grid_remove()
+        if source == SOURCE_NOVEL:
             self.novel_frame.grid()
+        elif source == SOURCE_REPEAT:
+            self.repeat_frame.grid()
         else:
-            self.novel_frame.grid_remove()
             self.pool_frame.grid()
+        pool_source = source == SOURCE_POOL
         for widget in (self.mode_weighted_radio, self.mode_uniform_radio, self.messages_entry):
             try:
-                widget.configure(state="disabled" if (novel or locked) else "normal")
+                widget.configure(state="disabled" if (not pool_source or locked) else "normal")
             except tk.TclError:
                 pass
 
@@ -1185,7 +1250,7 @@ class BiliSendApp(tk.Tk):
 
     # ------------------------------------------------------------------ 主题/选择
     def _on_source_label(self) -> str:
-        return "说书人" if self.source_var.get() == SOURCE_NOVEL else "弹幕池"
+        return SOURCE_LABELS.get(self.source_var.get(), "弹幕池")
 
     # ------------------------------------------------------------------ Cookie
     def _set_cookie_value(self, value: str, hide: bool = True) -> None:
@@ -1372,6 +1437,8 @@ class BiliSendApp(tk.Tk):
 
     # ------------------------------------------------------------------ 启动/停止
     def _build_source(self, task: TaskConfig, interactive: bool = True) -> tuple[MessageSource | None, str]:
+        if task.source == SOURCE_REPEAT:
+            return RepeatSource(task.interval_seconds), ""
         if task.source == SOURCE_NOVEL:
             if not task.novel_path:
                 return None, "说书人模式需要先选择小说文件"
