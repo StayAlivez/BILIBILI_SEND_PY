@@ -43,7 +43,8 @@ class MessageItem:
     @property
     def display_text(self) -> str:
         if self.is_emoticon:
-            return f"[表情] {self.emoticon_name or self.emoticon_unique}"
+            name = self.emoticon_name or self.emoticon_unique
+            return f"表情：{name}" + (f" + {self.text}" if self.text else "")
         return self.text
 
     @property

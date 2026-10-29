@@ -9,6 +9,7 @@ __pycache__/
 # 运行产物
 logs/
 cache/
+exports/
 config.json.tmp
 config.json.bad
 dist/
