@@ -15,6 +15,7 @@ import unittest
 import urllib.error
 from pathlib import Path
 from unittest import mock
+from urllib.parse import parse_qs
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -36,6 +37,8 @@ def tearDownModule() -> None:
 
 from bili_send.client import (  # noqa: E402
     BilibiliClient,
+    DanmakuConfig,
+    DanmakuOption,
     LoginStatus,
     RoomInfo,
     SendResult,
@@ -43,7 +46,14 @@ from bili_send.client import (  # noqa: E402
     mask_cookie,
     parse_cookie,
 )
-from bili_send.config import AppConfig, load_config, save_config  # noqa: E402
+from bili_send.config import (  # noqa: E402
+    SOURCE_NOVEL,
+    SOURCE_POOL,
+    AppConfig,
+    TaskConfig,
+    load_config,
+    save_config,
+)
 from bili_send.messages import (  # noqa: E402
     MessageFileError,
     MessageItem,
@@ -51,7 +61,9 @@ from bili_send.messages import (  # noqa: E402
     load_messages,
     save_messages,
 )
+from bili_send.novel import NovelBook, load_book, split_text  # noqa: E402
 from bili_send.runner import DanmakuRunner  # noqa: E402
+from bili_send.sources import NovelSource, PoolSource  # noqa: E402
 
 GOOD_COOKIE = "SESSDATA=abc%2C123; bili_jct=deadbeef; DedeUserID=57796390"
 
@@ -301,13 +313,26 @@ class ClientSendTests(unittest.TestCase):
 class FakeClient:
     """供 Runner 测试使用的假客户端。"""
 
-    def __init__(self, results: list[SendResult] | None = None, login: LoginStatus | None = None) -> None:
+    def __init__(
+        self,
+        results: list[SendResult] | None = None,
+        login: LoginStatus | None = None,
+        dm: DanmakuConfig | None = None,
+    ) -> None:
         self.sent: list[str] = []
         self._results = results or []
         self._login = login or LoginStatus(known=True, logged_in=True, uname="测试用户", uid="1")
+        self._dm = dm
 
     def check_login(self) -> LoginStatus:
         return self._login
+
+    def get_danmaku_config(self, room_id: int) -> DanmakuConfig:
+        return self._dm or DanmakuConfig(
+            modes=[DanmakuOption(1, "滚动", True), DanmakuOption(5, "顶部", True)],
+            colors=[DanmakuOption(16777215, "白色", True), DanmakuOption(5566168, "青绿", True)],
+            fetched=True,
+        )
 
     def resolve_room(self, room_id: int) -> RoomInfo:
         return RoomInfo(room_id=room_id, title="测试直播间", live_status=1)
@@ -440,6 +465,235 @@ class ConfigTests(unittest.TestCase):
         save_config(AppConfig(cookie=GOOD_COOKIE, save_cookie=False), self.path)
         loaded = load_config(self.path)
         self.assertFalse(loaded.save_cookie)
+
+
+class TaskConfigTests(unittest.TestCase):
+    def test_legacy_config_migrates_to_one_task(self) -> None:
+        cfg = AppConfig.from_dict({"cookie": GOOD_COOKIE, "room_id": 123, "interval_seconds": 15})
+        self.assertEqual(len(cfg.tasks), 1)
+        task = cfg.active_task
+        self.assertEqual(task.room_id, 123)
+        self.assertEqual(task.cookie, GOOD_COOKIE)
+        self.assertEqual(task.interval_seconds, 15)
+
+    def test_tasks_roundtrip(self) -> None:
+        cfg = AppConfig.from_dict(
+            {
+                "tasks": [
+                    {
+                        "id": "a", "name": "A", "room_id": 1, "cookie": "c1",
+                        "source": SOURCE_NOVEL, "novel_path": "b.txt", "novel_index": 5,
+                    },
+                    {"id": "b", "name": "B", "room_id": 2, "cookie": "c2"},
+                ],
+                "active_task_id": "b",
+            }
+        )
+        self.assertEqual(len(cfg.tasks), 2)
+        self.assertEqual(cfg.active_task.id, "b")
+        self.assertEqual(cfg.tasks[0].source, SOURCE_NOVEL)
+        self.assertEqual(cfg.tasks[0].novel_index, 5)
+
+    def test_storage_copy_clears_task_cookies(self) -> None:
+        cfg = AppConfig.from_dict(
+            {"save_cookie": False, "tasks": [{"id": "a", "cookie": "secret"}]}
+        )
+        copied = cfg.storage_copy()
+        self.assertEqual(copied.cookie, "")
+        self.assertEqual(copied.tasks[0].cookie, "")
+
+    def test_task_values_are_clamped(self) -> None:
+        task = TaskConfig.from_dict({"novel_chunk_size": 99, "interval_seconds": 0, "source": "?"})
+        self.assertEqual(task.novel_chunk_size, 20)
+        self.assertEqual(task.interval_seconds, 1.0)
+        self.assertEqual(task.source, SOURCE_POOL)
+
+
+class NovelTests(TempJsonMixin):
+    def test_split_respects_length(self) -> None:
+        text = "这是一个很长很长的句子。" * 20
+        chunks = split_text(text, 20)
+        self.assertTrue(chunks)
+        self.assertTrue(all(len(chunk) <= 20 for chunk in chunks))
+
+    def test_split_prefers_punctuation(self) -> None:
+        chunks = split_text("第一句话说完了。第二句话。", 10)
+        self.assertTrue(chunks[0].endswith("。"))
+
+    def test_load_gbk_book(self) -> None:
+        self.path.write_bytes("你好。世界。".encode("gb18030"))
+        book = load_book(self.path, 20)
+        self.assertGreaterEqual(len(book), 1)
+        self.assertEqual(book.title, "messages")
+
+    def test_novel_source_advances_and_reports(self) -> None:
+        book = NovelBook(Path("book.txt"), ["一", "二", "三"])
+        seen: list[int] = []
+        source = NovelSource(book, 1, on_advance=seen.append)
+        self.assertEqual(source.next().text, "二")
+        source.advance()
+        self.assertEqual(source.index, 2)
+        self.assertEqual(seen, [2])
+        source.advance()
+        self.assertTrue(source.finished)
+        self.assertIn("已播完", source.progress_text())
+
+
+class EmoticonMessageTests(TempJsonMixin):
+    def test_emoticon_roundtrip(self) -> None:
+        save_messages(
+            self.path,
+            [MessageItem("", 2, "room_1_2", "https://x/y.png", "妙")],
+        )
+        items = load_messages(self.path)
+        self.assertTrue(items[0].is_emoticon)
+        self.assertEqual(items[0].weight, 2)
+        self.assertIn("表情", items[0].display_text)
+
+
+class ClientPermissionTests(unittest.TestCase):
+    def test_danmaku_config_parses_modes_colors_and_guard(self) -> None:
+        def fake_urlopen(request, timeout=0):
+            url = request.full_url
+            if "GetDMConfigByGroup" in url:
+                return FakeResponse(
+                    {
+                        "code": 0,
+                        "data": {
+                            "mode": [
+                                {"name": "滚动", "mode": 1, "status": 1},
+                                {"name": "顶部", "mode": 5, "status": 0},
+                            ],
+                            "group": [
+                                {
+                                    "name": "普",
+                                    "color": [
+                                        {"name": "白色", "color": "16777215", "status": 1},
+                                        {"name": "红色", "color": "16711680", "status": 0},
+                                    ],
+                                }
+                            ],
+                        },
+                    }
+                )
+            if "getInfoByUser" in url:
+                return FakeResponse({"code": 0, "data": {"info": {"guard_level": 3}}})
+            return FakeResponse({"code": 0})
+
+        client = BilibiliClient(GOOD_COOKIE)
+        with mock.patch("bili_send.client.urllib.request.urlopen", fake_urlopen):
+            config = client.get_danmaku_config(1)
+        self.assertTrue(config.fetched)
+        self.assertEqual(config.guard_level, 3)
+        self.assertEqual([item.value for item in config.enabled_modes], [1])
+        self.assertEqual([item.value for item in config.enabled_colors], [16777215])
+        self.assertEqual(config.guard_text, "舰长")
+
+    def test_emoticons_parse_permission_and_url(self) -> None:
+        def fake_urlopen(request, timeout=0):
+            return FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "data": [
+                            {
+                                "pkg_id": 7,
+                                "pkg_name": "房间表情",
+                                "pkg_perm": 1,
+                                "emoticons": [
+                                    {
+                                        "emoticon_unique": "room_1_2",
+                                        "emoji": "妙",
+                                        "url": "//i0.hdslb.com/a.png",
+                                        "perm": 1,
+                                        "is_dynamic": 0,
+                                    },
+                                    {
+                                        "emoticon_unique": "room_1_3",
+                                        "emoji": "哭",
+                                        "url": "https://i0.hdslb.com/b.png",
+                                        "perm": 0,
+                                        "unlock_show_text": "需舰长",
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                }
+            )
+
+        client = BilibiliClient(GOOD_COOKIE)
+        with mock.patch("bili_send.client.urllib.request.urlopen", fake_urlopen):
+            packages = client.get_emoticons(1)
+        self.assertEqual(len(packages), 1)
+        first, second = packages[0].emoticons
+        self.assertTrue(first.perm)
+        self.assertEqual(first.url, "https://i0.hdslb.com/a.png")
+        self.assertFalse(second.perm)
+        self.assertEqual(second.unlock_text, "需舰长")
+
+    def test_emoticon_send_payload(self) -> None:
+        captured: dict = {}
+
+        def fake_urlopen(request, timeout=0):
+            captured["body"] = request.data.decode("utf-8")
+            return FakeResponse({"code": 0, "message": "发送成功"})
+
+        client = BilibiliClient(GOOD_COOKIE)
+        with mock.patch("bili_send.client.urllib.request.urlopen", fake_urlopen):
+            result = client.send_danmaku(
+                "", 123, emoticon_unique="room_1_2", emoticon_text="妙"
+            )
+        self.assertTrue(result.ok)
+        payload = parse_qs(captured["body"])
+        self.assertEqual(payload["dm_type"], ["1"])
+        self.assertEqual(payload["emoticon_unique"], ["room_1_2"])
+        self.assertEqual(payload["msg"], ["[妙]"])
+
+
+class NovelRunnerTests(unittest.TestCase):
+    @staticmethod
+    def _wait_for(predicate, timeout: float = 3.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def test_novel_runs_in_order_and_completes(self) -> None:
+        client = FakeClient()
+        task = TaskConfig(
+            id="t1", name="说书", room_id=1, cookie=GOOD_COOKIE,
+            interval_seconds=0.02, source=SOURCE_NOVEL,
+        )
+        book = NovelBook(Path("book.txt"), ["一", "二", "三"])
+        events: "queue.Queue[dict]" = queue.Queue()
+        runner = DanmakuRunner(task, NovelSource(book, 0), events, client=client)
+        runner.start()
+        self.assertTrue(self._wait_for(lambda: not runner.running))
+        runner.join(1.0)
+        self.assertEqual(client.sent, ["一", "二", "三"])
+        self.assertTrue(runner.completed)
+
+    def test_permission_fallback(self) -> None:
+        dm = DanmakuConfig(
+            modes=[DanmakuOption(1, "滚动", True)],
+            colors=[DanmakuOption(16777215, "白色", True)],
+            fetched=True,
+        )
+        client = FakeClient(dm=dm)
+        task = TaskConfig(
+            id="t1", name="测试", room_id=1, cookie=GOOD_COOKIE,
+            interval_seconds=0.02, color=16711680, danmaku_mode=5,
+        )
+        book = NovelBook(Path("book.txt"), ["一"])
+        events: "queue.Queue[dict]" = queue.Queue()
+        runner = DanmakuRunner(task, NovelSource(book, 0), events, client=client)
+        runner.start()
+        self.assertTrue(self._wait_for(lambda: not runner.running))
+        self.assertEqual(runner.effective_mode, 1)
+        self.assertEqual(runner.effective_color, 16777215)
 
 
 if __name__ == "__main__":

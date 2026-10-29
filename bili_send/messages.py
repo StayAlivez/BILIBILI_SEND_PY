@@ -32,14 +32,32 @@ class MessageFileError(Exception):
 class MessageItem:
     text: str
     weight: int = 1
+    emoticon_unique: str = ""
+    emoticon_url: str = ""
+    emoticon_name: str = ""
+
+    @property
+    def is_emoticon(self) -> bool:
+        return bool(self.emoticon_unique)
+
+    @property
+    def display_text(self) -> str:
+        if self.is_emoticon:
+            return f"[表情] {self.emoticon_name or self.emoticon_unique}"
+        return self.text
 
     @property
     def usable(self) -> bool:
-        """权重 > 0 且内容非空才会参与抽取。"""
-        return self.weight > 0 and bool(self.text.strip())
+        """权重 > 0 且内容非空（或带表情）才会参与抽取。"""
+        return self.weight > 0 and (bool(self.text.strip()) or self.is_emoticon)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"msg": self.text, "weight": self.weight}
+        data: dict[str, Any] = {"msg": self.text, "weight": self.weight}
+        if self.is_emoticon:
+            data["emoticon_unique"] = self.emoticon_unique
+            data["emoticon_url"] = self.emoticon_url
+            data["emoticon_name"] = self.emoticon_name
+        return data
 
 
 def load_messages(path: Path) -> list[MessageItem]:
@@ -71,11 +89,17 @@ def load_messages(path: Path) -> list[MessageItem]:
 
 
 def _parse_entry(entry: Any, index: int) -> MessageItem | None:
+    emoticon_unique = ""
+    emoticon_url = ""
+    emoticon_name = ""
     if isinstance(entry, str):
         text, weight = entry, 1
     elif isinstance(entry, dict):
         text = entry.get("msg") or entry.get("text") or entry.get("content") or ""
         weight = entry.get("weight", 1)
+        emoticon_unique = str(entry.get("emoticon_unique") or "")
+        emoticon_url = str(entry.get("emoticon_url") or "")
+        emoticon_name = str(entry.get("emoticon_name") or "")
         try:
             weight = int(weight)
         except (TypeError, ValueError):
@@ -87,15 +111,15 @@ def _parse_entry(entry: Any, index: int) -> MessageItem | None:
 
     # 弹幕不能换行，顺手把连续空白压成一个空格
     text = " ".join(str(text).split())
-    if not text:
+    if not text and not emoticon_unique:
         log.warning("第 %d 条消息内容为空，已跳过", index)
         return None
-    if len(text) > MAX_DANMAKU_LENGTH:
+    if text and len(text) > MAX_DANMAKU_LENGTH:
         log.warning(
             "第 %d 条消息有 %d 个字，超过 B 站 %d 字上限，可能发送失败：%s",
             index, len(text), MAX_DANMAKU_LENGTH, text[:12] + "…",
         )
-    return MessageItem(text, weight)
+    return MessageItem(text, weight, emoticon_unique, emoticon_url, emoticon_name)
 
 
 def save_messages(path: Path, items: Iterable[MessageItem]) -> None:

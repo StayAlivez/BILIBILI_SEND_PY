@@ -1,15 +1,27 @@
 {
-  "cookie": "",
   "save_cookie": true,
-  "room_id": 22676119,
-  "interval_seconds": 30,
-  "mode": "weighted",
-  "messages_file": "messages/weighted.json",
-  "avoid_repeat": true,
-  "color": 5566168,
-  "fontsize": 25,
-  "danmaku_mode": 1,
   "timeout_seconds": 5,
-  "room_title": "",
-  "anchor_name": ""
+  "messages_file": "messages/weighted.json",
+  "tasks": [
+    {
+      "id": "demo000001",
+      "name": "主直播间",
+      "room_id": 22676119,
+      "cookie": "",
+      "interval_seconds": 30,
+      "mode": "weighted",
+      "source": "pool",
+      "messages_file": "messages/weighted.json",
+      "novel_path": "",
+      "novel_index": 0,
+      "novel_chunk_size": 20,
+      "color": 5566168,
+      "fontsize": 25,
+      "danmaku_mode": 1,
+      "avoid_repeat": true,
+      "room_title": "",
+      "anchor_name": ""
+    }
+  ],
+  "active_task_id": "demo000001"
 }

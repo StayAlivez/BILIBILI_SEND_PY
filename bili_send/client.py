@@ -22,6 +22,9 @@ API_ROOM_INIT = "https://api.live.bilibili.com/room/v1/Room/room_init"
 API_ROOM_INFO = "https://api.live.bilibili.com/room/v1/Room/get_info"
 API_ANCHOR_INFO = "https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room"
 API_NAV = "https://api.bilibili.com/x/web-interface/nav"
+API_DM_CONFIG = "https://api.live.bilibili.com/xlive/web-room/v1/dM/GetDMConfigByGroup"
+API_USER_INFO = "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByUser"
+API_EMOTICONS = "https://api.live.bilibili.com/xlive/web-ucenter/v2/emoticon/GetEmoticons"
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -35,10 +38,12 @@ CODE_HINTS: dict[int, str] = {
     -111: "CSRF 校验失败，Cookie 里的 bili_jct 缺失或与登录态不匹配",
     -400: "请求被拒绝（常见原因：Cookie 已失效、账号受限或弹幕内容含屏蔽词）",
     -403: "没有发言权限或被风控",
-    -500: "B 站服务器异常，稍后再试",
+    -500: "未达到使用条件（如顶部/底部弹幕、专属颜色需要舰长）或服务器异常",
     -509: "请求太频繁被限流，请调大发送间隔",
     10030: "弹幕内容不被接受（常见原因：含屏蔽词、超长或账号等级不足）",
     10031: "发送过于频繁，请调大发送间隔",
+    1003212: "弹幕超出长度限制",
+    10065107: "该颜色不可用（可能需要舰长/提督等身份）",
 }
 
 # 这些错误重试没有意义，发送线程应直接停下
@@ -117,6 +122,60 @@ class LoginStatus:
         if not self.logged_in:
             return "未登录"
         return f"{self.uname}（UID {self.uid}）" if self.uname else f"已登录（UID {self.uid}）"
+
+
+@dataclass
+class DanmakuOption:
+    """一种可用的弹幕颜色或显示模式。"""
+
+    value: int
+    name: str
+    enabled: bool = True
+
+
+@dataclass
+class DanmakuConfig:
+    """当前账号在该直播间可用的颜色和模式（由 B 站接口返回）。"""
+
+    modes: list[DanmakuOption] = field(default_factory=list)
+    colors: list[DanmakuOption] = field(default_factory=list)
+    guard_level: int = 0
+    fetched: bool = False
+    message: str = ""
+
+    @property
+    def enabled_modes(self) -> list[DanmakuOption]:
+        return [item for item in self.modes if item.enabled]
+
+    @property
+    def enabled_colors(self) -> list[DanmakuOption]:
+        return [item for item in self.colors if item.enabled]
+
+    @property
+    def guard_text(self) -> str:
+        return {1: "总督", 2: "提督", 3: "舰长"}.get(self.guard_level, "普通用户")
+
+
+@dataclass
+class Emoticon:
+    """一个直播间表情。"""
+
+    unique: str
+    name: str
+    emoji: str
+    url: str
+    perm: bool
+    pkg_name: str = ""
+    unlock_text: str = ""
+    is_dynamic: bool = False
+
+
+@dataclass
+class EmoticonPackage:
+    pkg_id: int
+    name: str
+    perm: bool
+    emoticons: list[Emoticon] = field(default_factory=list)
 
 
 @dataclass
@@ -275,6 +334,105 @@ class BilibiliClient:
             message=message,
         )
 
+    def get_danmaku_config(self, room_id: int) -> DanmakuConfig:
+        """获取当前账号在该直播间能用的颜色和模式（顶部/底部、彩色都有身份门槛）。"""
+        try:
+            data = self._json(f"{API_DM_CONFIG}?room_id={int(room_id)}")
+        except BilibiliError as exc:
+            return DanmakuConfig(fetched=False, message=str(exc))
+        payload = data.get("data") or {}
+
+        modes: list[DanmakuOption] = []
+        for item in payload.get("mode") or []:
+            value = _to_int(item.get("mode"), 0)
+            if value <= 0:
+                continue
+            modes.append(
+                DanmakuOption(value, str(item.get("name") or f"模式{value}"), _to_int(item.get("status"), 1) == 1)
+            )
+
+        colors: list[DanmakuOption] = []
+        seen: set[int] = set()
+        for group in payload.get("group") or []:
+            for item in group.get("color") or []:
+                value = _to_int(item.get("color"), 0)
+                if value in seen:
+                    continue
+                seen.add(value)
+                colors.append(
+                    DanmakuOption(value, str(item.get("name") or f"#{value:06x}"), _to_int(item.get("status"), 1) == 1)
+                )
+
+        if not modes:
+            modes = [DanmakuOption(POSITION_ROLLING, "滚动", True)]
+        if not colors:
+            colors = [DanmakuOption(16777215, "白色", True)]
+        return DanmakuConfig(modes, colors, guard_level=self.get_guard_level(room_id), fetched=True)
+
+    def get_guard_level(self, room_id: int) -> int:
+        """0 普通用户，3 舰长，2 提督，1 总督；拿不到时按 0 处理。"""
+        try:
+            data = self._json(f"{API_USER_INFO}?room_id={int(room_id)}")
+        except BilibiliError:
+            return 0
+        payload = data.get("data") or {}
+        info = payload.get("info") or payload
+        return _to_int(info.get("guard_level"), 0)
+
+    def get_emoticons(self, room_id: int) -> list[EmoticonPackage]:
+        """获取直播间表情包；每个表情带 ``perm`` 表示当前账号能否使用。"""
+        data = self._json(
+            f"{API_EMOTICONS}?platform=pc&room_id={int(room_id)}",
+            referer=f"https://live.bilibili.com/{room_id}",
+        )
+        code = _to_int(data.get("code"), -1)
+        if code != 0:
+            raise ApiError(str(data.get("message") or "获取表情失败"), payload=data)
+        payload = data.get("data") or {}
+
+        packages: list[EmoticonPackage] = []
+        for pkg in payload.get("data") or []:
+            pkg_name = str(pkg.get("pkg_name") or "")
+            items: list[Emoticon] = []
+            for emo in pkg.get("emoticons") or []:
+                unique = str(emo.get("emoticon_unique") or "")
+                if not unique:
+                    continue
+                url = str(emo.get("url") or "")
+                if url.startswith("//"):
+                    url = "https:" + url
+                perm = _to_int(emo.get("perm"), 0) == 1
+                unlock = str(emo.get("unlock_show_text") or "")
+                if not unlock and not perm:
+                    gift = _to_int(emo.get("unlock_need_gift"), 0)
+                    level = _to_int(emo.get("unlock_need_level"), 0)
+                    unlock = f"需礼物 {gift}" if gift else (f"需等级 {level}" if level else "未解锁")
+                items.append(
+                    Emoticon(
+                        unique=unique,
+                        name=str(emo.get("emoji") or emo.get("descript") or unique),
+                        emoji=str(emo.get("emoji") or ""),
+                        url=url,
+                        perm=perm,
+                        pkg_name=pkg_name,
+                        unlock_text=unlock,
+                        is_dynamic=_to_int(emo.get("is_dynamic"), 0) == 1,
+                    )
+                )
+            packages.append(
+                EmoticonPackage(
+                    pkg_id=_to_int(pkg.get("pkg_id"), 0),
+                    name=pkg_name,
+                    perm=_to_int(pkg.get("pkg_perm"), 0) == 1,
+                    emoticons=items,
+                )
+            )
+        return packages
+
+    def download_bytes(self, url: str) -> bytes:
+        """下载表情图片（走同一个 UA/Referer，避免 CDN 403）。"""
+        return self._open(url, referer="https://live.bilibili.com/")
+
     def resolve_room(self, room_id: int) -> RoomInfo:
         """把短号/房间号统一成发送弹幕要用的真实房间号，并带出标题等信息。"""
         requested = int(room_id)
@@ -314,10 +472,14 @@ class BilibiliClient:
         color: int = 5566168,
         fontsize: int = 25,
         mode: int = POSITION_ROLLING,
+        emoticon_unique: str = "",
+        emoticon_text: str = "",
     ) -> SendResult:
-        """发送一条弹幕，任何失败都转换成 :class:`SendResult` 返回，不抛异常。"""
+        """发送一条弹幕（文字或直播间表情），任何失败都转成 :class:`SendResult`。"""
         text = " ".join(str(msg).split())
-        if not text:
+        if not text and emoticon_unique and emoticon_text:
+            text = f"[{emoticon_text}]"
+        if not text and not emoticon_unique:
             return SendResult(False, -1, "弹幕内容为空")
         if not self.csrf:
             return SendResult(False, -111, "Cookie 里缺少 bili_jct，无法发送", CODE_HINTS[-111])
@@ -333,6 +495,10 @@ class BilibiliClient:
             "csrf": self.csrf,
             "csrf_token": self.csrf,
         }
+        if emoticon_unique:
+            payload["dm_type"] = "1"
+            payload["emoticon_unique"] = emoticon_unique
+            payload["bulge_display"] = "0"
         body = urllib.parse.urlencode(payload).encode("utf-8")
         referer = f"https://live.bilibili.com/{room_id}"
 

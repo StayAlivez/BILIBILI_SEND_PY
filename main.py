@@ -64,32 +64,41 @@ def run_gui() -> int:
 
 
 def run_cli() -> int:
+    from bili_send.config import SOURCE_NOVEL, resolve_path, save_config
     from bili_send.messages import MessageFileError, MessagePool, load_messages
+    from bili_send.novel import NovelError, load_book
     from bili_send.runner import DanmakuRunner
+    from bili_send.sources import NovelSource, PoolSource
 
     cfg = load_config()
-    if not cfg.cookie:
+    task = cfg.active_task
+    if not task.cookie:
         print("config.json 里还没有 Cookie：请先运行一次图形界面填写，或手动编辑 config.json。")
         return 2
 
     try:
-        items = load_messages(cfg.messages_path)
-    except MessageFileError as exc:
-        print(f"消息文件读取失败：{exc}")
-        return 2
-
-    try:
-        pool = MessagePool(items, mode=cfg.mode, avoid_repeat=cfg.avoid_repeat)
-    except ValueError as exc:
-        print(f"没有可用弹幕：{exc}")
+        if task.source == SOURCE_NOVEL:
+            if not task.novel_path:
+                print("当前任务使用说书人模式，但还没有选择小说文件。")
+                return 2
+            book = load_book(resolve_path(task.novel_path), task.novel_chunk_size)
+            source = NovelSource(book, task.novel_index)
+            summary = source.progress_text()
+        else:
+            items = load_messages(cfg.messages_path)
+            pool = MessagePool(items, mode=task.mode, avoid_repeat=task.avoid_repeat)
+            source = PoolSource(pool)
+            summary = f"{len(pool)} 条可用弹幕"
+    except (MessageFileError, NovelError, ValueError) as exc:
+        print(f"内容读取失败：{exc}")
         return 2
 
     events: "queue.Queue[dict]" = queue.Queue()
-    runner = DanmakuRunner(cfg, pool, events)
+    runner = DanmakuRunner(task, source, events)
     runner.start()
     print(
-        f"正在启动：房间 {cfg.room_id}，间隔 {cfg.interval_seconds:g} 秒，"
-        f"共 {len(pool)} 条可用弹幕。按 Ctrl+C 停止。"
+        f"正在启动：任务 {task.display_name}，房间 {task.room_id}，间隔 {task.interval_seconds:g} 秒，"
+        f"{summary}。按 Ctrl+C 停止。"
     )
     try:
         while runner.running:
@@ -98,6 +107,12 @@ def run_cli() -> int:
         print("\n正在停止…")
         runner.stop()
     runner.join(5.0)
+    if task.source == SOURCE_NOVEL and isinstance(source, NovelSource):
+        task.novel_index = source.index
+        try:
+            save_config(cfg.storage_copy())
+        except OSError as exc:
+            print(f"保存说书进度失败：{exc}")
     return 1 if runner.last_error else 0
 
 
