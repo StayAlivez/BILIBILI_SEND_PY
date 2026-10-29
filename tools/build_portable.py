@@ -39,7 +39,7 @@ APP_ITEMS = (
     "README.md",
     "config.example.json",
 )
-IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".idea", "logs", "config.json", ".tmp")
+IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.txt", ".idea", "logs", "config.json", ".tmp")
 
 
 def read_version() -> str:
