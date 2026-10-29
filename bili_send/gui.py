@@ -33,6 +33,7 @@ from .client import (
     DanmakuConfig,
     DanmakuOption,
     Emoticon,
+    HistoryDanmaku,
     LoginStatus,
     RoomInfo,
     cookie_warnings,
@@ -141,6 +142,11 @@ class BiliSendApp(tk.Tk):
         self._single_emoticon: Emoticon | None = None
         self._emote_room_id = 0
         self._emote_task_id = ""
+        self._emote_photo: tk.PhotoImage | None = None
+        self._single_emote_photo: tk.PhotoImage | None = None
+        self._log_photos: list[tk.PhotoImage] = []
+        self._history_items: list[HistoryDanmaku] = []
+        self._history_task_id = ""
         self._novel_book: NovelBook | None = None
         self._novel_task_id: str | None = None
         self._running_ui = False
@@ -198,6 +204,7 @@ class BiliSendApp(tk.Tk):
         self.tab_emoticons = ttk.Frame(self.notebook, padding=10)
         self.tab_novel = ttk.Frame(self.notebook, padding=10)
         self.tab_messages = ttk.Frame(self.notebook, padding=10)
+        self.tab_history = ttk.Frame(self.notebook, padding=10)
         self.tab_log = ttk.Frame(self.notebook, padding=10)
         for tab, text in (
             (self.tab_send, "  发送  "),
@@ -205,6 +212,7 @@ class BiliSendApp(tk.Tk):
             (self.tab_emoticons, "  表情  "),
             (self.tab_novel, "  说书人  "),
             (self.tab_messages, "  消息库  "),
+            (self.tab_history, "  直播间弹幕  "),
             (self.tab_log, "  运行日志  "),
         ):
             self.notebook.add(tab, text=text)
@@ -213,6 +221,7 @@ class BiliSendApp(tk.Tk):
         self._build_emoticons_tab()
         self._build_novel_tab()
         self._build_messages_tab()
+        self._build_history_tab()
         self._build_log_tab()
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -433,8 +442,12 @@ class BiliSendApp(tk.Tk):
         self.single_btn.grid(row=0, column=2)
 
         self.single_emote_var = tk.StringVar(value="未选择表情")
-        ttk.Label(single, textvariable=self.single_emote_var, style="Muted.TLabel").grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
+        emote_info = ttk.Frame(single)
+        emote_info.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.single_emote_thumb = ttk.Label(emote_info)
+        self.single_emote_thumb.pack(side="left")
+        ttk.Label(emote_info, textvariable=self.single_emote_var, style="Muted.TLabel").pack(
+            side="left", padx=(6, 0)
         )
         emote_actions = ttk.Frame(single)
         emote_actions.grid(row=1, column=1, columnspan=2, sticky="e", pady=(6, 0))
@@ -649,7 +662,11 @@ class BiliSendApp(tk.Tk):
         self.editor_emote_row = ttk.Frame(editor)
         self.editor_emote_row.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         self.editor_emote_var = tk.StringVar()
-        ttk.Label(self.editor_emote_row, textvariable=self.editor_emote_var, style="Muted.TLabel").pack(side="left")
+        self.editor_emote_thumb = ttk.Label(self.editor_emote_row)
+        self.editor_emote_thumb.pack(side="left")
+        ttk.Label(self.editor_emote_row, textvariable=self.editor_emote_var, style="Muted.TLabel").pack(
+            side="left", padx=(6, 0)
+        )
         self.editor_emote_clear = ttk.Button(
             self.editor_emote_row, text="移除表情", command=self._clear_editor_emote
         )
@@ -685,6 +702,133 @@ class BiliSendApp(tk.Tk):
             button = ttk.Button(tools, text=text, command=command)
             button.pack(side="left", padx=(0, 8))
             self._message_tool_buttons.append(button)
+
+    # ------------------------------------------------------------------ 直播间弹幕
+    def _build_history_tab(self) -> None:
+        tab = self.tab_history
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(2, weight=1)
+
+        head = ttk.Frame(tab)
+        head.grid(row=0, column=0, sticky="ew")
+        self.history_header_var = tk.StringVar(value="当前任务：—")
+        ttk.Label(head, textvariable=self.history_header_var).pack(side="left")
+        self.history_status_var = tk.StringVar(value="点右侧「拉取弹幕」读取直播间最近弹幕。")
+        ttk.Label(head, textvariable=self.history_status_var, style="Muted.TLabel").pack(side="left", padx=12)
+        self.history_fetch_btn = ttk.Button(head, text="拉取弹幕", command=self._fetch_history)
+        self.history_fetch_btn.pack(side="right")
+
+        tools = ttk.Frame(tab)
+        tools.grid(row=1, column=0, sticky="ew", pady=(8, 6))
+        self.history_repeat_btn = ttk.Button(
+            tools, text="复读选中 (+1)", command=self._repeat_history, state="disabled"
+        )
+        self.history_repeat_btn.pack(side="left")
+        ttk.Button(tools, text="清空列表", command=self._clear_history).pack(side="left", padx=(8, 0))
+        ttk.Label(tools, text="双击某条弹幕也可以直接复读", style="Muted.TLabel").pack(side="left", padx=12)
+
+        body = ttk.Frame(tab)
+        body.grid(row=2, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.history_tree = ttk.Treeview(
+            body, columns=("time", "user", "text", "type"), show="headings", selectmode="browse"
+        )
+        for column, title, width, anchor, stretch in (
+            ("time", "时间", 120, "center", False),
+            ("user", "用户", 140, "w", False),
+            ("text", "弹幕内容", 620, "w", True),
+            ("type", "类型", 90, "center", False),
+        ):
+            self.history_tree.heading(column, text=title)
+            self.history_tree.column(column, width=width, anchor=anchor, stretch=stretch)
+        self.history_tree.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(body, orient="vertical", command=self.history_tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.history_tree.configure(yscrollcommand=scroll.set)
+        self.history_tree.bind("<<TreeviewSelect>>", self._on_history_select)
+        self.history_tree.bind("<Double-1>", self._on_history_double)
+
+    def _refresh_history_header(self) -> None:
+        task = self._active_task()
+        self.history_header_var.set(f"当前任务：{task.display_name}｜房间 {task.room_id}")
+        if self._history_task_id and self._history_task_id != task.id:
+            self._history_task_id = ""
+            self._history_items = []
+            self._render_history([])
+            self.history_status_var.set("任务已切换，请重新拉取。")
+
+    def _fetch_history(self) -> None:
+        if not self._sync_active_task_from_widgets(silent=True):
+            messagebox.showerror("设置不完整", "请先填写当前任务的房间号。")
+            return
+        task = self._active_task().copy()
+        if not task.cookie:
+            self.history_status_var.set("拉取直播间弹幕需要当前任务的 Cookie。")
+            return
+        self.history_fetch_btn.configure(state="disabled")
+        self.history_status_var.set("正在拉取直播间弹幕…")
+
+        def worker() -> None:
+            client = BilibiliClient(task.cookie, timeout=10.0)
+            try:
+                room = client.resolve_room(task.room_id)
+                items = client.get_room_history(room.room_id, 60)
+                self.events.put({"kind": "history", "ok": True, "items": items, "task_id": task.id})
+            except BilibiliError as exc:
+                self.events.put({"kind": "history", "ok": False, "message": str(exc), "task_id": task.id})
+            except Exception as exc:  # noqa: BLE001
+                log.exception("拉取直播间弹幕异常")
+                self.events.put({"kind": "history", "ok": False, "message": str(exc), "task_id": task.id})
+
+        threading.Thread(target=worker, name="room-history", daemon=True).start()
+
+    def _render_history(self, items: list[HistoryDanmaku]) -> None:
+        for iid in self.history_tree.get_children():
+            self.history_tree.delete(iid)
+        for index, item in enumerate(reversed(items)):
+            kind = "表情" if item.dm_type == 1 else ("房管" if item.is_admin else "弹幕")
+            self.history_tree.insert(
+                "", "end", iid=str(index),
+                values=(item.timeline, item.nickname or item.uid, item.text, kind),
+            )
+        self._history_items = list(reversed(items))
+        self.history_status_var.set(f"共 {len(items)} 条；双击或选中后点「复读选中」。")
+        self._on_history_select(None)
+
+    def _on_history_select(self, _event: Any) -> None:
+        state = "normal" if self.history_tree.selection() else "disabled"
+        self.history_repeat_btn.configure(state=state)
+
+    def _on_history_double(self, event: tk.Event) -> None:
+        row = self.history_tree.identify_row(event.y)
+        if not row:
+            return
+        self.history_tree.selection_set(row)
+        self._repeat_history()
+
+    def _repeat_history(self) -> None:
+        selection = self.history_tree.selection()
+        if not selection:
+            messagebox.showinfo("未选中", "请先选中一条弹幕。")
+            return
+        try:
+            index = int(selection[0])
+            item = self._history_items[index]
+        except (ValueError, IndexError):
+            return
+        if not item.text.strip():
+            return
+        if item.dm_type == 1:
+            messagebox.showinfo("表情弹幕", "这条是表情弹幕，历史接口拿不到表情标识，暂不支持复读。")
+            return
+        self._send_payload_async(
+            item.text, None, target="history", display=f"复读 {item.nickname or item.uid}：{item.text}"
+        )
+
+    def _clear_history(self) -> None:
+        self._render_history([])
+        self.history_status_var.set("已清空。")
 
     # ------------------------------------------------------------------ 日志页
     def _build_log_tab(self) -> None:
@@ -767,6 +911,7 @@ class BiliSendApp(tk.Tk):
             self.task_tree.selection_set(active_id)
         self._refresh_novel_summary()
         self._refresh_emote_header()
+        self._refresh_history_header()
         self._refresh_buttons()
 
     def _dm_key(self, task: TaskConfig) -> tuple[str, int, str]:
@@ -928,6 +1073,7 @@ class BiliSendApp(tk.Tk):
         self._refresh_single_count()
         self._refresh_novel_summary()
         self._refresh_emote_header()
+        self._refresh_history_header()
         self.task_hint_var.set(
             f"当前任务：{task.display_name}｜来源：{SOURCE_LABELS.get(task.source, task.source)}｜"
             f"间隔：{_format_number(task.interval_seconds)} 秒"
@@ -1242,9 +1388,46 @@ class BiliSendApp(tk.Tk):
         text = self.single_var.get()
         self.single_count_var.set(f"{len(text)}/{MAX_DANMAKU_LENGTH}")
 
+    def _emote_thumb(self, unique: str, size: int = 22) -> tk.PhotoImage | None:
+        path = self._emoticon_images.get(unique)
+        if not path or not path.exists():
+            path = None
+            for candidate in (CACHE_DIR / "emoticons").glob("*/images/*"):
+                if candidate.stem == unique:
+                    path = candidate
+                    break
+        if not path or not path.exists():
+            return None
+        try:
+            photo = tk.PhotoImage(data=base64.b64encode(path.read_bytes()))
+        except tk.TclError:
+            return None
+        factor = max(1, int(photo.width() // max(1, size)))
+        if factor > 1:
+            photo = photo.subsample(factor)
+        return photo
+
     def _set_single_emoticon(self, emo: Emoticon | None) -> None:
         self._single_emoticon = emo
-        self.single_emote_var.set(f"已选表情：{emo.name}（可附加文字）" if emo else "未选择表情")
+        if emo:
+            self._single_emote_photo = self._emote_thumb(emo.unique, 24)
+            if self._single_emote_photo:
+                self.single_emote_thumb.configure(image=self._single_emote_photo)
+            else:
+                self.single_emote_thumb.configure(image="")
+            if emo.combinable:
+                self.single_emote_var.set(f"已选表情：{_emote_label(emo.name)}（可拼文字）")
+                self.single_entry.configure(state="normal")
+            else:
+                self.single_emote_var.set(f"已选表情：{_emote_label(emo.name)}（仅表情，不能拼文字）")
+                self.single_var.set("")
+                self._refresh_single_count()
+                self.single_entry.configure(state="disabled")
+        else:
+            self._single_emote_photo = None
+            self.single_emote_thumb.configure(image="")
+            self.single_emote_var.set("未选择表情")
+            self.single_entry.configure(state="normal")
 
     def _choose_single_emoticon(self) -> None:
         task = self._active_task()
@@ -1270,7 +1453,8 @@ class BiliSendApp(tk.Tk):
         listbox = tk.Listbox(frame, width=56, height=18)
         listbox.pack(fill="both", expand=True, pady=(6, 6))
         for pkg, emo in options:
-            listbox.insert("end", f"{pkg.name} / {emo.name}")
+            tag = "可拼文字" if emo.combinable else "仅表情"
+            listbox.insert("end", f"{pkg.name} / {_emote_label(emo.name)}（{tag}）")
 
         def choose(_event=None) -> None:
             selection = listbox.curselection()
@@ -1288,10 +1472,14 @@ class BiliSendApp(tk.Tk):
     def _on_single_send(self) -> None:
         text = self.single_var.get().strip()
         emo = self._single_emoticon
+        if emo and not emo.combinable:
+            text = ""
         if not text and not emo:
             messagebox.showinfo("内容为空", "请输入弹幕内容，或先选择一个表情。")
             return
-        display = f"表情 {emo.name}" if (emo and not text) else (text or "")
+        display = f"表情 {_emote_label(emo.name)}" if (emo and not text) else (text or "")
+        if emo and text:
+            display = f"[{_emote_label(emo.name)}] {text}"
         self._send_payload_async(text, emo, target="single", display=display)
 
     def _send_payload_async(
@@ -1304,6 +1492,9 @@ class BiliSendApp(tk.Tk):
         if not task.cookie:
             messagebox.showwarning("缺少 Cookie", "当前任务没有 Cookie。")
             return
+        if emo and not emo.combinable and text:
+            messagebox.showwarning("不能拼文字", f"表情「{_emote_label(emo.name)}」只能单独发送，不能拼接文字。")
+            return
         if len(text) > MAX_DANMAKU_LENGTH:
             messagebox.showwarning("太长", f"B 站单条弹幕上限 {MAX_DANMAKU_LENGTH} 字。")
             return
@@ -1312,12 +1503,16 @@ class BiliSendApp(tk.Tk):
 
         def worker() -> None:
             client = BilibiliClient(task.cookie, timeout=8.0)
+            emote_unique = emo.unique if emo else ""
             try:
                 room = client.resolve_room(task.room_id)
                 status = client.check_login()
                 if status.known and not status.logged_in:
                     self.events.put(
-                        {"kind": "single", "ok": False, "text": display, "message": status.message, "target": target}
+                        {
+                            "kind": "single", "ok": False, "text": display,
+                            "message": status.message, "target": target, "emote_unique": emote_unique,
+                        }
                     )
                     return
                 dm = client.get_danmaku_config(room.room_id)
@@ -1328,20 +1523,30 @@ class BiliSendApp(tk.Tk):
                     color=color,
                     fontsize=task.fontsize,
                     mode=mode,
-                    emoticon_unique=emo.unique if emo else "",
+                    emoticon_unique=emote_unique,
                     emoticon_text=emo.name if emo else "",
+                    emoticon_combinable=bool(emo and emo.combinable),
                 )
                 self.events.put(
-                    {"kind": "single", "ok": result.ok, "text": display, "message": result.detail, "target": target}
+                    {
+                        "kind": "single", "ok": result.ok, "text": display,
+                        "message": result.detail, "target": target, "emote_unique": emote_unique,
+                    }
                 )
             except BilibiliError as exc:
                 self.events.put(
-                    {"kind": "single", "ok": False, "text": display, "message": str(exc), "target": target}
+                    {
+                        "kind": "single", "ok": False, "text": display,
+                        "message": str(exc), "target": target, "emote_unique": emote_unique,
+                    }
                 )
             except Exception as exc:  # noqa: BLE001
                 log.exception("单条发送异常")
                 self.events.put(
-                    {"kind": "single", "ok": False, "text": display, "message": str(exc), "target": target}
+                    {
+                        "kind": "single", "ok": False, "text": display,
+                        "message": str(exc), "target": target, "emote_unique": emote_unique,
+                    }
                 )
 
         threading.Thread(target=worker, name="single-send", daemon=True).start()
@@ -1426,7 +1631,11 @@ class BiliSendApp(tk.Tk):
         try:
             while True:
                 record = LOG_QUEUE.get_nowait()
-                self._append_log(record.get("level", "info"), record.get("message", ""))
+                self._append_log(
+                    record.get("level", "info"),
+                    record.get("message", ""),
+                    record.get("emote_unique", ""),
+                )
         except queue.Empty:
             pass
         try:
@@ -1491,6 +1700,16 @@ class BiliSendApp(tk.Tk):
             self.detect_btn.configure(state="normal")
             self.room_info_var.set(f"检测失败：{event.get('message')}")
             log.warning("检测直播间失败：%s", event.get("message"))
+        elif kind == "history":
+            self.history_fetch_btn.configure(state="normal")
+            if task_id and task_id != self._active_task().id:
+                return
+            if event.get("ok"):
+                self._history_task_id = task_id or self._active_task().id
+                self._render_history(list(event.get("items") or []))
+            else:
+                self.history_status_var.set(f"拉取失败：{event.get('message', '')}")
+                log.warning("拉取直播间弹幕失败：%s", event.get("message", ""))
         elif kind == "single":
             if event.get("target") == "single":
                 self.single_btn.configure(state="normal")
@@ -1499,7 +1718,12 @@ class BiliSendApp(tk.Tk):
                     self._set_single_emoticon(None)
                     self._refresh_single_count()
             if event.get("ok"):
-                success(log, "单条弹幕发送成功：%s", event.get("text", ""))
+                success(
+                    log,
+                    "单条弹幕发送成功：%s",
+                    event.get("text", ""),
+                    extra={"emote_unique": event.get("emote_unique", "")},
+                )
             else:
                 log.error("单条弹幕发送失败：%s", event.get("message", ""))
         elif kind == "emoticons":
@@ -1718,7 +1942,8 @@ class BiliSendApp(tk.Tk):
             header = ttk.Frame(frame)
             header.pack(fill="x", padx=6, pady=(4, 0))
             ttk.Label(
-                header, text=f"{pkg.name}（可用 {usable}/{len(pkg.emoticons)}）",
+                header,
+                text=f"{pkg.name}（可用 {usable}/{len(pkg.emoticons)}，{'可拼文字' if pkg.pkg_type == 3 else '仅表情'}）",
                 font=("Microsoft YaHei UI", 10, "bold"),
             ).pack(side="left")
             ttk.Button(
@@ -1747,7 +1972,7 @@ class BiliSendApp(tk.Tk):
                         self._emote_photos.append(photo)
                     except tk.TclError:
                         photo = None
-                text = emo.name if emo.perm else f"{emo.name}（锁）"
+                text = _emote_label(emo.name) if emo.perm else f"{_emote_label(emo.name)}（锁）"
                 button = tk.Button(
                     grid, text=text, image=photo, compound="top",
                     relief="flat", cursor="hand2" if emo.perm else "arrow",
@@ -1820,21 +2045,29 @@ class BiliSendApp(tk.Tk):
 
     def _add_emoticon_to_pool(self, emo: Emoticon) -> None:
         if not emo.perm:
-            self.emote_hint_var.set(f"「{emo.name}」不可用：{emo.unlock_text or '未解锁'}")
+            self.emote_hint_var.set(f"「{_emote_label(emo.name)}」不可用：{emo.unlock_text or '未解锁'}")
             return
         if not self.items:
             self._load_messages_into_state(initial=True)
         for item in self.items:
             if item.emoticon_unique == emo.unique:
-                self.emote_hint_var.set(f"「{emo.name}」已经在弹幕池里了。")
+                self.emote_hint_var.set(f"「{_emote_label(emo.name)}」已经在弹幕池里了。")
                 return
         self.items.append(
-            MessageItem(text="", weight=1, emoticon_unique=emo.unique, emoticon_url=emo.url, emoticon_name=emo.name)
+            MessageItem(
+                text="",
+                weight=1,
+                emoticon_unique=emo.unique,
+                emoticon_url=emo.url,
+                emoticon_name=emo.name,
+                emoticon_combinable=emo.combinable,
+            )
         )
         self._save_messages_quietly()
         self._refresh_message_tree()
-        self.emote_hint_var.set(f"已加入弹幕池：{emo.name}（{emo.pkg_name}）")
-        log.info("已将表情「%s」加入弹幕池", emo.name)
+        tag = "可拼文字" if emo.combinable else "仅表情"
+        self.emote_hint_var.set(f"已加入弹幕池：{_emote_label(emo.name)}（{emo.pkg_name}，{tag}）")
+        log.info("已将表情「%s」加入弹幕池", _emote_label(emo.name))
 
     # ------------------------------------------------------------------ 说书人
     def _browse_novel(self) -> None:
@@ -2000,6 +2233,7 @@ class BiliSendApp(tk.Tk):
             self._update_message_buttons()
             return
         item = self.items[index]
+        self.msg_text.configure(state="normal")
         self.msg_text.delete("1.0", "end")
         self.msg_text.insert("1.0", item.text)
         if item.is_emoticon:
@@ -2010,6 +2244,7 @@ class BiliSendApp(tk.Tk):
                     item.emoticon_name,
                     item.emoticon_url,
                     True,
+                    combinable=item.emoticon_combinable,
                 )
             )
         else:
@@ -2019,12 +2254,26 @@ class BiliSendApp(tk.Tk):
 
     def _set_editor_emoticon(self, emo: Emoticon | None) -> None:
         self._editor_emoticon = emo
+        self.msg_text.configure(state="normal")
         if emo:
-            self.editor_emote_var.set(f"已选表情：{emo.name}（发送时作为表情，可附加文字）")
+            self._emote_photo = self._emote_thumb(emo.unique, 22)
+            if self._emote_photo:
+                self.editor_emote_thumb.configure(image=self._emote_photo)
+            else:
+                self.editor_emote_thumb.configure(image="")
+            if emo.combinable:
+                self.editor_emote_var.set(f"已选表情：{_emote_label(emo.name)}（可拼文字）")
+            else:
+                self.editor_emote_var.set(f"已选表情：{_emote_label(emo.name)}（仅表情，不能拼文字）")
+                self.msg_text.delete("1.0", "end")
+                self.msg_text.configure(state="disabled")
             self.editor_emote_row.grid()
         else:
+            self._emote_photo = None
+            self.editor_emote_thumb.configure(image="")
             self.editor_emote_var.set("")
             self.editor_emote_row.grid_remove()
+            self.msg_text.configure(state="normal")
 
     def _clear_editor_emote(self) -> None:
         self._set_editor_emoticon(None)
@@ -2054,12 +2303,17 @@ class BiliSendApp(tk.Tk):
             messagebox.showwarning("内容为空", "请先输入弹幕内容，或选择一个表情。")
             return
         if emo:
-            self.items.append(MessageItem(text, weight, emo.unique, emo.url, emo.name))
+            if not emo.combinable and text:
+                messagebox.showwarning("不能拼文字", f"表情「{_emote_label(emo.name)}」只能单独发送。")
+                return
+            self.items.append(
+                MessageItem(text, weight, emo.unique, emo.url, emo.name, emo.combinable)
+            )
         else:
             self.items.append(MessageItem(text, weight))
         self._refresh_message_tree()
         self._clear_editor()
-        log.info("新增弹幕：%s（权重 %d）", text or f"表情 {emo.name if emo else ''}", weight)
+        log.info("新增弹幕：%s（权重 %d）", text or f"表情 {_emote_label(emo.name) if emo else ''}", weight)
 
     def _on_message_update(self) -> None:
         index = self._selected_index()
@@ -2072,7 +2326,12 @@ class BiliSendApp(tk.Tk):
             messagebox.showwarning("内容为空", "请先输入弹幕内容，或保留一个表情。")
             return
         if emo:
-            self.items[index] = MessageItem(text, weight, emo.unique, emo.url, emo.name)
+            if not emo.combinable and text:
+                messagebox.showwarning("不能拼文字", f"表情「{_emote_label(emo.name)}」只能单独发送。")
+                return
+            self.items[index] = MessageItem(
+                text, weight, emo.unique, emo.url, emo.name, emo.combinable
+            )
         else:
             self.items[index] = MessageItem(text, weight)
         self._refresh_message_tree()
@@ -2092,11 +2351,17 @@ class BiliSendApp(tk.Tk):
                 item.emoticon_name,
                 item.emoticon_url,
                 True,
+                combinable=item.emoticon_combinable,
             )
             if item.is_emoticon
             else None
         )
-        self._send_payload_async(item.text, emo, target="library", display=item.display_text)
+        self._send_payload_async(
+            item.text if (not emo or emo.combinable) else "",
+            emo,
+            target="library",
+            display=item.display_text,
+        )
 
     def _on_message_delete(self) -> None:
         index = self._selected_index()
@@ -2112,6 +2377,7 @@ class BiliSendApp(tk.Tk):
         log.info("已删除弹幕：%s", item.display_text)
 
     def _clear_editor(self) -> None:
+        self.msg_text.configure(state="normal")
         self.msg_text.delete("1.0", "end")
         self.msg_weight_var.set("1")
         self._set_editor_emoticon(None)
@@ -2287,14 +2553,23 @@ class BiliSendApp(tk.Tk):
             log.warning("保存配置失败：%s", exc)
 
     # ------------------------------------------------------------------ 日志
-    def _append_log(self, level: str, message: str) -> None:
+    def _append_log(self, level: str, message: str, emote_unique: str = "") -> None:
         tag = {
             "debug": "info", "info": "info", "success": "success",
             "warning": "warn", "warn": "warn", "error": "error", "critical": "error",
         }.get(level, "info")
         self.log_text.configure(state="normal")
         self.log_text.insert("end", f"[{time.strftime('%H:%M:%S')}] ", ("time",))
-        self.log_text.insert("end", message + "\n", (tag,))
+        self.log_text.insert("end", message, (tag,))
+        if emote_unique:
+            photo = self._emote_thumb(emote_unique, 18)
+            if photo:
+                self.log_text.insert("end", " ")
+                self.log_text.image_create("end", image=photo)
+                self._log_photos.append(photo)
+                if len(self._log_photos) > 300:
+                    del self._log_photos[:100]
+        self.log_text.insert("end", "\n")
         self.log_text.configure(state="disabled")
         if self.autoscroll_var.get():
             self.log_text.see("end")
@@ -2326,6 +2601,8 @@ class BiliSendApp(tk.Tk):
             self._refresh_emote_header()
         elif self.notebook.index("current") == 3:
             self._refresh_novel_summary()
+        elif self.notebook.index("current") == 5:
+            self._refresh_history_header()
 
     def _on_callback_error(self, exc_type: type, exc_value: BaseException, tb: Any) -> None:
         text = "".join(traceback.format_exception(exc_type, exc_value, tb))
@@ -2370,6 +2647,13 @@ def _pick_color_mode(task: TaskConfig, config: DanmakuConfig) -> tuple[int, int]
 def _safe_filename(value: str) -> str:
     cleaned = re.sub(r'[\\/:*?"<>|\s]+', "_", (value or "").strip()).strip("._")
     return cleaned[:60] or "emoticon"
+
+
+def _emote_label(value: str) -> str:
+    text = (value or "").strip()
+    if text.startswith("[") and text.endswith("]"):
+        return text[1:-1] or text
+    return text
 
 
 def _format_number(value: float) -> str:

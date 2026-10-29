@@ -25,6 +25,7 @@ API_NAV = "https://api.bilibili.com/x/web-interface/nav"
 API_DM_CONFIG = "https://api.live.bilibili.com/xlive/web-room/v1/dM/GetDMConfigByGroup"
 API_USER_INFO = "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByUser"
 API_EMOTICONS = "https://api.live.bilibili.com/xlive/web-ucenter/v2/emoticon/GetEmoticons"
+API_HISTORY = "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory"
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -108,6 +109,18 @@ class RoomInfo:
 
 
 @dataclass
+class HistoryDanmaku:
+    """直播间最近弹幕（用于 +1 / 复读）。"""
+
+    uid: str
+    nickname: str
+    text: str
+    timeline: str = ""
+    dm_type: int = 0
+    is_admin: bool = False
+
+
+@dataclass
 class LoginStatus:
     """Cookie 登录态；``known`` 为 False 表示网络失败、无法判断。"""
 
@@ -168,6 +181,7 @@ class Emoticon:
     pkg_name: str = ""
     unlock_text: str = ""
     is_dynamic: bool = False
+    combinable: bool = False
 
 
 @dataclass
@@ -176,6 +190,7 @@ class EmoticonPackage:
     name: str
     perm: bool
     emoticons: list[Emoticon] = field(default_factory=list)
+    pkg_type: int = 1
 
 
 @dataclass
@@ -393,6 +408,10 @@ class BilibiliClient:
         packages: list[EmoticonPackage] = []
         for pkg in payload.get("data") or []:
             pkg_name = str(pkg.get("pkg_name") or "")
+            pkg_type = _to_int(pkg.get("pkg_type"), 1)
+            # web 端只有 pkg_type == 3 的表情会插进输入框，可和文字一起发；
+            # 其他类型走 dm_type=1 直发，服务端不接受附加文字。
+            combinable = pkg_type == 3
             items: list[Emoticon] = []
             for emo in pkg.get("emoticons") or []:
                 unique = str(emo.get("emoticon_unique") or "")
@@ -417,6 +436,7 @@ class BilibiliClient:
                         pkg_name=pkg_name,
                         unlock_text=unlock,
                         is_dynamic=_to_int(emo.get("is_dynamic"), 0) == 1,
+                        combinable=combinable,
                     )
                 )
             packages.append(
@@ -425,9 +445,46 @@ class BilibiliClient:
                     name=pkg_name,
                     perm=_to_int(pkg.get("pkg_perm"), 0) == 1,
                     emoticons=items,
+                    pkg_type=pkg_type,
                 )
             )
         return packages
+
+    def get_room_history(self, room_id: int, limit: int = 60) -> list[HistoryDanmaku]:
+        """拉取直播间最近弹幕；返回按时间正序的列表。"""
+        data = self._json(
+            f"{API_HISTORY}?roomid={int(room_id)}&room_type=0",
+            referer=f"https://live.bilibili.com/{room_id}",
+        )
+        code = _to_int(data.get("code"), -1)
+        if code != 0:
+            raise ApiError(str(data.get("message") or "获取弹幕失败"), payload=data)
+        payload = data.get("data") or {}
+        entries: list[HistoryDanmaku] = []
+        seen: set[tuple[str, str, str]] = set()
+        for section, admin in (("room", False), ("admin", True)):
+            for row in payload.get(section) or []:
+                text = str(row.get("text") or "").strip()
+                if not text:
+                    continue
+                uid = str(row.get("uid") or "")
+                timeline = str(row.get("timeline") or "")
+                key = (uid, text, timeline)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append(
+                    HistoryDanmaku(
+                        uid=uid,
+                        nickname=str(row.get("nickname") or ""),
+                        text=text,
+                        timeline=timeline,
+                        dm_type=_to_int(row.get("dm_type"), 0),
+                        is_admin=admin or _to_int(row.get("isadmin"), 0) == 1,
+                    )
+                )
+        entries.sort(key=lambda item: item.timeline)
+        return entries[-max(1, int(limit)):]
 
     def download_bytes(self, url: str) -> bytes:
         """下载表情图片（走同一个 UA/Referer，避免 CDN 403）。"""
@@ -474,12 +531,28 @@ class BilibiliClient:
         mode: int = POSITION_ROLLING,
         emoticon_unique: str = "",
         emoticon_text: str = "",
+        emoticon_combinable: bool = False,
     ) -> SendResult:
-        """发送一条弹幕（文字或直播间表情），任何失败都转成 :class:`SendResult`。"""
+        """发送一条弹幕（文字或直播间表情），任何失败都转成 :class:`SendResult`。
+
+        网页端抓包结论：
+
+        * 可拼接文字的表情（``pkg_type == 3``）：把触发词 ``[emoji]`` 当作普通文字发送，
+          例如 ``[妙][哇] 333``，不带 ``dm_type``。
+        * 不可拼接的表情：``msg`` 直接填 ``emoticon_unique``，带 ``dm_type=1`` 和
+          ``emoticonOptions=[object Object]``，服务端不接受附加文字。
+        """
         text = " ".join(str(msg).split())
-        if not text and emoticon_unique and emoticon_text:
-            text = f"[{emoticon_text}]"
-        if not text and not emoticon_unique:
+        if emoticon_unique and emoticon_combinable:
+            trigger = (emoticon_text or emoticon_unique).strip()
+            if not (trigger.startswith("[") and trigger.endswith("]")):
+                trigger = f"[{trigger}]"
+            text = trigger + (f" {text}" if text else "")
+        elif emoticon_unique:
+            if text:
+                return SendResult(False, -1, "该表情不支持拼接文字")
+            text = emoticon_unique
+        if not text:
             return SendResult(False, -1, "弹幕内容为空")
         if not self.csrf:
             return SendResult(False, -111, "Cookie 里缺少 bili_jct，无法发送", CODE_HINTS[-111])
@@ -494,11 +567,12 @@ class BilibiliClient:
             "roomid": str(int(room_id)),
             "csrf": self.csrf,
             "csrf_token": self.csrf,
+            "data_extend": '{"trackid":"-99998"}',
+            "web_location": "444.8",
         }
-        if emoticon_unique:
+        if emoticon_unique and not emoticon_combinable:
             payload["dm_type"] = "1"
-            payload["emoticon_unique"] = emoticon_unique
-            payload["bulge_display"] = "0"
+            payload["emoticonOptions"] = "[object Object]"
         body = urllib.parse.urlencode(payload).encode("utf-8")
         referer = f"https://live.bilibili.com/{room_id}"
 

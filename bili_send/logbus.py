@@ -32,6 +32,12 @@ class QueueLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self.target.put({"level": record.levelname.lower(), "message": self.format(record)})
+            self.target.put(
+                {
+                    "level": record.levelname.lower(),
+                    "message": self.format(record),
+                    "emote_unique": getattr(record, "emote_unique", ""),
+                }
+            )
         except Exception:  # noqa: BLE001 - 日志本身不能影响主流程
             self.handleError(record)

@@ -47,8 +47,12 @@ class EmoticonCache:
         fetched_at = float(data.get("fetched_at") or 0)
         if time.time() - fetched_at > CACHE_TTL_SECONDS:
             return None
+        raw_packages = data.get("packages") or []
+        # 旧缓存没有 pkg_type，无法判断能否拼文字，直接重新拉取
+        if any("pkg_type" not in raw for raw in raw_packages):
+            return None
         packages: list[EmoticonPackage] = []
-        for raw in data.get("packages") or []:
+        for raw in raw_packages:
             items = []
             for emo in raw.get("emoticons") or []:
                 try:
@@ -61,6 +65,7 @@ class EmoticonCache:
                     name=str(raw.get("name") or ""),
                     perm=bool(raw.get("perm")),
                     emoticons=items,
+                    pkg_type=int(raw.get("pkg_type") or 1),
                 )
             )
         return packages
@@ -74,6 +79,7 @@ class EmoticonCache:
                     "pkg_id": pkg.pkg_id,
                     "name": pkg.name,
                     "perm": pkg.perm,
+                    "pkg_type": pkg.pkg_type,
                     "emoticons": [asdict(emo) for emo in pkg.emoticons],
                 }
                 for pkg in packages

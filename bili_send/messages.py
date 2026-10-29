@@ -35,6 +35,7 @@ class MessageItem:
     emoticon_unique: str = ""
     emoticon_url: str = ""
     emoticon_name: str = ""
+    emoticon_combinable: bool = False
 
     @property
     def is_emoticon(self) -> bool:
@@ -43,7 +44,9 @@ class MessageItem:
     @property
     def display_text(self) -> str:
         if self.is_emoticon:
-            name = self.emoticon_name or self.emoticon_unique
+            name = (self.emoticon_name or self.emoticon_unique).strip()
+            if name.startswith("[") and name.endswith("]"):
+                name = name[1:-1]
             return f"表情：{name}" + (f" + {self.text}" if self.text else "")
         return self.text
 
@@ -58,6 +61,7 @@ class MessageItem:
             data["emoticon_unique"] = self.emoticon_unique
             data["emoticon_url"] = self.emoticon_url
             data["emoticon_name"] = self.emoticon_name
+            data["emoticon_combinable"] = self.emoticon_combinable
         return data
 
 
@@ -93,6 +97,7 @@ def _parse_entry(entry: Any, index: int) -> MessageItem | None:
     emoticon_unique = ""
     emoticon_url = ""
     emoticon_name = ""
+    emoticon_combinable = False
     if isinstance(entry, str):
         text, weight = entry, 1
     elif isinstance(entry, dict):
@@ -101,6 +106,11 @@ def _parse_entry(entry: Any, index: int) -> MessageItem | None:
         emoticon_unique = str(entry.get("emoticon_unique") or "")
         emoticon_url = str(entry.get("emoticon_url") or "")
         emoticon_name = str(entry.get("emoticon_name") or "")
+        if "emoticon_combinable" in entry:
+            emoticon_combinable = bool(entry.get("emoticon_combinable"))
+        elif emoticon_unique and text:
+            # 旧数据没有该字段：带文字的旧表情按可拼接处理，避免丢字
+            emoticon_combinable = True
         try:
             weight = int(weight)
         except (TypeError, ValueError):
@@ -120,7 +130,7 @@ def _parse_entry(entry: Any, index: int) -> MessageItem | None:
             "第 %d 条消息有 %d 个字，超过 B 站 %d 字上限，可能发送失败：%s",
             index, len(text), MAX_DANMAKU_LENGTH, text[:12] + "…",
         )
-    return MessageItem(text, weight, emoticon_unique, emoticon_url, emoticon_name)
+    return MessageItem(text, weight, emoticon_unique, emoticon_url, emoticon_name, emoticon_combinable)
 
 
 def save_messages(path: Path, items: Iterable[MessageItem]) -> None:

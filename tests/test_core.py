@@ -600,6 +600,7 @@ class ClientPermissionTests(unittest.TestCase):
                                 "pkg_id": 7,
                                 "pkg_name": "房间表情",
                                 "pkg_perm": 1,
+                                "pkg_type": 3,
                                 "emoticons": [
                                     {
                                         "emoticon_unique": "room_1_2",
@@ -626,13 +627,15 @@ class ClientPermissionTests(unittest.TestCase):
         with mock.patch("bili_send.client.urllib.request.urlopen", fake_urlopen):
             packages = client.get_emoticons(1)
         self.assertEqual(len(packages), 1)
+        self.assertEqual(packages[0].pkg_type, 3)
         first, second = packages[0].emoticons
         self.assertTrue(first.perm)
+        self.assertTrue(first.combinable)
         self.assertEqual(first.url, "https://i0.hdslb.com/a.png")
         self.assertFalse(second.perm)
         self.assertEqual(second.unlock_text, "需舰长")
 
-    def test_emoticon_send_payload(self) -> None:
+    def test_emoticon_send_payload_direct(self) -> None:
         captured: dict = {}
 
         def fake_urlopen(request, timeout=0):
@@ -646,9 +649,36 @@ class ClientPermissionTests(unittest.TestCase):
             )
         self.assertTrue(result.ok)
         payload = parse_qs(captured["body"])
+        self.assertEqual(payload["msg"], ["room_1_2"])
         self.assertEqual(payload["dm_type"], ["1"])
-        self.assertEqual(payload["emoticon_unique"], ["room_1_2"])
-        self.assertEqual(payload["msg"], ["[妙]"])
+        self.assertEqual(payload["emoticonOptions"], ["[object Object]"])
+        self.assertNotIn("emoticon_unique", payload)
+
+    def test_emoticon_send_combinable_uses_text(self) -> None:
+        captured: dict = {}
+
+        def fake_urlopen(request, timeout=0):
+            captured["body"] = request.data.decode("utf-8")
+            return FakeResponse({"code": 0, "message": "发送成功"})
+
+        client = BilibiliClient(GOOD_COOKIE)
+        with mock.patch("bili_send.client.urllib.request.urlopen", fake_urlopen):
+            result = client.send_danmaku(
+                "666", 123, emoticon_unique="emoji_1", emoticon_text="[妙]",
+                emoticon_combinable=True,
+            )
+        self.assertTrue(result.ok)
+        payload = parse_qs(captured["body"])
+        self.assertEqual(payload["msg"], ["[妙] 666"])
+        self.assertNotIn("dm_type", payload)
+        self.assertNotIn("emoticonOptions", payload)
+
+    def test_non_combinable_emoticon_rejects_text(self) -> None:
+        result = BilibiliClient(GOOD_COOKIE).send_danmaku(
+            "666", 123, emoticon_unique="room_1_2", emoticon_text="妙"
+        )
+        self.assertFalse(result.ok)
+        self.assertIn("不支持拼接", result.message)
 
 
 class NovelRunnerTests(unittest.TestCase):

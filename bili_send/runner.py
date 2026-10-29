@@ -212,6 +212,7 @@ class DanmakuRunner:
                 mode=self.effective_mode,
                 emoticon_unique=item.emoticon_unique,
                 emoticon_text=item.emoticon_name or item.emoticon_unique,
+                emoticon_combinable=item.emoticon_combinable,
             )
             self.total += 1
 
@@ -219,7 +220,14 @@ class DanmakuRunner:
                 self.ok += 1
                 streak = 0
                 self.source.advance()
-                success(log, "%s第 %d 条发送成功：%s", self.prefix, self.total, item.display_text)
+                success(
+                    log,
+                    "%s第 %d 条发送成功：%s",
+                    self.prefix,
+                    self.total,
+                    item.display_text,
+                    extra={"emote_unique": item.emoticon_unique},
+                )
                 if self.source.finished:
                     completed = True
             else:
